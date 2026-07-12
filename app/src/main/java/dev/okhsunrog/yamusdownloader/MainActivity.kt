@@ -6,7 +6,6 @@ import android.content.pm.ShortcutManager
 import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.Bundle
-import android.os.Environment
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -34,7 +33,7 @@ class MainActivity : ComponentActivity() {
                 DownloaderApp(
                     tokenStore = tokenStore,
                     incomingLink = incomingLink,
-                    outputDirectory = getExternalFilesDir(Environment.DIRECTORY_MUSIC)?.absolutePath,
+                    stagingDirectory = cacheDir.resolve("downloads").absolutePath,
                 )
             }
         }

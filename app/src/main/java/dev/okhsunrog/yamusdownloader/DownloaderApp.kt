@@ -102,7 +102,7 @@ private sealed interface AuthStatus {
 private sealed interface DownloadStatus {
     data object Idle : DownloadStatus
     data object Downloading : DownloadStatus
-    data class Success(val path: String) : DownloadStatus
+    data class Success(val track: PublishedTrack) : DownloadStatus
     data class Failure(val message: String) : DownloadStatus
 }
 
@@ -110,7 +110,7 @@ private sealed interface DownloadStatus {
 internal fun DownloaderApp(
     tokenStore: TokenStore,
     incomingLink: IncomingLink?,
-    outputDirectory: String?,
+    stagingDirectory: String,
 ) {
     var accessToken by remember { mutableStateOf(tokenStore.load()) }
 
@@ -122,7 +122,7 @@ internal fun DownloaderApp(
             DownloaderScreen(
                 accessToken = accessToken,
                 incomingLink = incomingLink,
-                outputDirectory = outputDirectory,
+                stagingDirectory = stagingDirectory,
                 onLogout = {
                     tokenStore.clear()
                     accessToken = ""
@@ -379,12 +379,13 @@ private fun AuthorizationCode(
 private fun DownloaderScreen(
     accessToken: String,
     incomingLink: IncomingLink?,
-    outputDirectory: String?,
+    stagingDirectory: String,
     onLogout: () -> Unit,
 ) {
     var link by rememberSaveable { mutableStateOf(incomingLink?.url.orEmpty()) }
     var status by remember { mutableStateOf<DownloadStatus>(DownloadStatus.Idle) }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     val backend = remember { NativeBridge.mediaBackend() }
 
     suspend fun download(rawLink: String) {
@@ -394,18 +395,15 @@ private fun DownloaderScreen(
                 status = DownloadStatus.Failure("Вставьте ссылку на трек из Яндекс Музыки")
                 return
             }
-            outputDirectory == null -> {
-                status = DownloadStatus.Failure("Android не предоставил папку Music")
-                return
-            }
         }
         link = normalizedLink
         status = DownloadStatus.Downloading
         status = try {
-            val path = withContext(Dispatchers.IO) {
-                NativeBridge.downloadTrack(accessToken, normalizedLink, outputDirectory)
+            val track = withContext(Dispatchers.IO) {
+                val path = NativeBridge.downloadTrack(accessToken, normalizedLink, stagingDirectory)
+                TrackPublisher.publish(context, path)
             }
-            DownloadStatus.Success(path)
+            DownloadStatus.Success(track)
         } catch (error: Throwable) {
             DownloadStatus.Failure(error.message ?: "Неизвестная ошибка")
         }
@@ -523,7 +521,10 @@ private fun DownloaderScreen(
                 }
             }
 
-            DownloadStatusCard(status)
+            DownloadStatusCard(
+                status = status,
+                onShare = { track -> TrackPublisher.share(context, track) },
+            )
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -605,7 +606,10 @@ private fun AppHeader(subtitle: String, onLogout: (() -> Unit)? = null) {
 }
 
 @Composable
-private fun DownloadStatusCard(status: DownloadStatus) {
+private fun DownloadStatusCard(
+    status: DownloadStatus,
+    onShare: (PublishedTrack) -> Unit,
+) {
     when (status) {
         DownloadStatus.Idle -> Unit
         DownloadStatus.Downloading -> StatusCard(
@@ -615,10 +619,17 @@ private fun DownloadStatusCard(status: DownloadStatus) {
             MaterialTheme.colorScheme.primary,
         )
         is DownloadStatus.Success -> StatusCard(
-            Icons.Rounded.CheckCircle,
-            "Трек сохранён",
-            status.path,
-            Color(0xFF2E7D32),
+            icon = Icons.Rounded.CheckCircle,
+            title = "Трек сохранён",
+            detail = "${status.track.location}/${status.track.displayName}",
+            color = Color(0xFF2E7D32),
+            action = {
+                TextButton(onClick = { onShare(status.track) }) {
+                    Icon(Icons.Rounded.Share, contentDescription = null)
+                    Spacer(Modifier.size(6.dp))
+                    Text("Поделиться")
+                }
+            },
         )
         is DownloadStatus.Failure -> StatusCard(
             Icons.Rounded.Error,
@@ -630,7 +641,13 @@ private fun DownloadStatusCard(status: DownloadStatus) {
 }
 
 @Composable
-private fun StatusCard(icon: ImageVector, title: String, detail: String, color: Color) {
+private fun StatusCard(
+    icon: ImageVector,
+    title: String,
+    detail: String,
+    color: Color,
+    action: (@Composable () -> Unit)? = null,
+) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
@@ -645,6 +662,7 @@ private fun StatusCard(icon: ImageVector, title: String, detail: String, color: 
             Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(title, fontWeight = FontWeight.SemiBold, color = color)
                 Text(detail, style = MaterialTheme.typography.bodyMedium)
+                action?.invoke()
             }
         }
     }

@@ -4,7 +4,9 @@ Android client prototype for `yandex-music-api`. On first launch the app signs
 the user in with Yandex OAuth Device Flow: authorization happens on Yandex's
 official browser page and the access token is saved locally. The downloader UI
 then accepts a track link and saves the best available quality into the
-application's external Music directory. Numeric IDs are deliberately rejected.
+public `Music/Ya Music` directory through Android MediaStore. The completed
+track can also be sent immediately with the system Share sheet. Numeric IDs are
+deliberately rejected.
 Track links can be pasted, shared to the application with Android `ACTION_SEND`,
 or opened directly with `ACTION_VIEW`. A shared link is retained through sign-in
 and starts automatically once authorization finishes.
