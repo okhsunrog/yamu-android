@@ -1,8 +1,14 @@
 # ya-mus-downloader
 
 Android client prototype for `yandex-music-api`. The UI accepts a Yandex Music
-OAuth token and a track ID or URL, then downloads the best available quality
-into the application's external Music directory.
+OAuth token and a track URL, then downloads the best available quality into the
+application's external Music directory. Numeric IDs are deliberately rejected.
+Track links can be pasted, shared to the application with Android `ACTION_SEND`,
+or opened directly with `ACTION_VIEW`. A shared link starts automatically when
+a saved token is available; otherwise the app fills the link and requests one.
+The app also publishes a rank-0 Sharing Shortcut named `Скачать` for the Direct
+Share row. Android retains final control over Sharesheet ordering; frequent use
+or manually pinning the target can move it ahead of other applications.
 
 Audio downloading, FLAC-in-MP4 normalization, M4A metadata, cover embedding,
 and complete validation run in Rust. The Android build enables the library's

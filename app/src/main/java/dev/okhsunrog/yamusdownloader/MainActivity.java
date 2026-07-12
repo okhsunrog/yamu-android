@@ -1,7 +1,12 @@
 package dev.okhsunrog.yamusdownloader;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.graphics.Typeface;
+import android.graphics.drawable.Icon;
+import android.content.pm.ShortcutInfo;
+import android.content.pm.ShortcutManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.text.InputType;
@@ -15,10 +20,21 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.File;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public final class MainActivity extends Activity {
+    private static final String SHARE_CATEGORY =
+            "dev.okhsunrog.yamusdownloader.category.DOWNLOAD";
+    private static final Pattern YANDEX_MUSIC_LINK = Pattern.compile(
+            "https://music\\.yandex\\.ru/[^\\s]+"
+    );
+
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private TokenStore tokenStore;
     private EditText tokenInput;
@@ -33,11 +49,38 @@ public final class MainActivity extends Activity {
         setContentView(buildContent());
 
         tokenStore = new TokenStore(this);
+        publishShareShortcut();
         String savedToken = tokenStore.load();
         tokenInput.setText(savedToken);
         rememberToken.setChecked(!savedToken.isEmpty());
         statusView.setText("Готово к работе (" + NativeBridge.mediaBackend() + ")");
         downloadButton.setOnClickListener(view -> startDownload());
+        if (state == null) {
+            handleIncomingIntent(getIntent());
+        }
+    }
+
+    private void publishShareShortcut() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            return;
+        }
+        ShortcutManager manager = getSystemService(ShortcutManager.class);
+        if (manager == null) {
+            return;
+        }
+        Set<String> categories = new HashSet<>();
+        categories.add(SHARE_CATEGORY);
+        ShortcutInfo.Builder builder = new ShortcutInfo.Builder(this, "download-shared-track")
+                .setShortLabel("Скачать")
+                .setLongLabel("Скачать из Яндекс Музыки")
+                .setIcon(Icon.createWithResource(this, android.R.drawable.stat_sys_download_done))
+                .setIntent(new Intent(Intent.ACTION_VIEW).setClass(this, MainActivity.class))
+                .setCategories(categories)
+                .setRank(0);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            builder.setLongLived(true);
+        }
+        manager.addDynamicShortcuts(Collections.singletonList(builder.build()));
     }
 
     private View buildContent() {
@@ -53,7 +96,7 @@ public final class MainActivity extends Activity {
         form.addView(title, matchWrap());
 
         TextView hint = new TextView(this);
-        hint.setText("Первый Android MVP: скачивает один трек в лучшем доступном качестве через Rust и in-process FFmpeg.");
+        hint.setText("Вставьте ссылку на трек или отправьте её сюда через меню «Поделиться». Скачается лучшее доступное качество.");
         hint.setTextSize(16);
         hint.setPadding(0, dp(8), 0, dp(18));
         form.addView(hint, matchWrap());
@@ -69,7 +112,7 @@ public final class MainActivity extends Activity {
         form.addView(rememberToken, matchWrap());
 
         trackInput = new EditText(this);
-        trackInput.setHint("Track ID или ссылка music.yandex.ru");
+        trackInput.setHint("https://music.yandex.ru/album/…/track/…");
         trackInput.setSingleLine(false);
         trackInput.setMinLines(2);
         form.addView(trackInput, matchWrap());
@@ -91,11 +134,12 @@ public final class MainActivity extends Activity {
 
     private void startDownload() {
         String token = tokenInput.getText().toString().trim();
-        String track = trackInput.getText().toString().trim();
-        if (token.isEmpty() || track.isEmpty()) {
+        String track = extractTrackLink(trackInput.getText().toString());
+        if (token.isEmpty() || track == null) {
             Toast.makeText(this, "Нужны token и ссылка на трек", Toast.LENGTH_SHORT).show();
             return;
         }
+        trackInput.setText(track);
 
         if (rememberToken.isChecked()) {
             tokenStore.save(token);
@@ -124,6 +168,49 @@ public final class MainActivity extends Activity {
                 });
             }
         });
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleIncomingIntent(intent);
+    }
+
+    private void handleIncomingIntent(Intent intent) {
+        if (intent == null) {
+            return;
+        }
+        String candidate = null;
+        if (Intent.ACTION_VIEW.equals(intent.getAction()) && intent.getData() != null) {
+            candidate = intent.getDataString();
+        } else if (Intent.ACTION_SEND.equals(intent.getAction())
+                && "text/plain".equals(intent.getType())) {
+            candidate = intent.getStringExtra(Intent.EXTRA_TEXT);
+        }
+        String link = extractTrackLink(candidate);
+        if (link == null) {
+            return;
+        }
+        trackInput.setText(link);
+        if (tokenInput.getText().toString().trim().isEmpty()) {
+            statusView.setText("Ссылка получена. Введите token, чтобы скачать трек.");
+            tokenInput.requestFocus();
+        } else {
+            statusView.setText("Ссылка получена, начинаю скачивание…");
+            downloadButton.post(this::startDownload);
+        }
+    }
+
+    private static String extractTrackLink(String text) {
+        if (text == null) {
+            return null;
+        }
+        Matcher matcher = YANDEX_MUSIC_LINK.matcher(text.trim());
+        if (!matcher.find()) {
+            return null;
+        }
+        return matcher.group().replaceFirst("[),.;!?]+$", "");
     }
 
     @Override

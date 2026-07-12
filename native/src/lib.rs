@@ -78,7 +78,7 @@ pub extern "system" fn Java_dev_okhsunrog_yamusdownloader_NativeBridge_downloadT
 }
 
 async fn download_track(token: &str, reference: &str, output_directory: &Path) -> Result<String> {
-    let track_reference: TrackRef = reference.parse().context("invalid track ID or URL")?;
+    let track_reference = parse_track_link(reference)?;
     let track_id = track_reference.track_id();
     let client = Client::new(token).context("invalid OAuth token")?;
     let uid = client
@@ -168,6 +168,13 @@ async fn download_track(token: &str, reference: &str, output_directory: &Path) -
     Ok(destination.display().to_string())
 }
 
+fn parse_track_link(reference: &str) -> Result<TrackRef> {
+    if !reference.starts_with("https://music.yandex.ru/") {
+        bail!("only Yandex Music track links are accepted");
+    }
+    reference.parse().context("invalid Yandex Music track link")
+}
+
 async fn download_audio(client: &Client, info: &DownloadInfo, destination: &Path) -> Result<()> {
     let mut last_error = None;
     for url in &info.urls {
@@ -253,10 +260,21 @@ fn temporary_path(destination: &Path, suffix: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::safe_file_component;
+    use super::{parse_track_link, safe_file_component};
 
     #[test]
     fn sanitizes_android_file_names() {
         assert_eq!(safe_file_component("AC/DC: Song?"), "AC_DC_ Song_");
+    }
+
+    #[test]
+    fn accepts_only_track_links() {
+        let link = parse_track_link(
+            "https://music.yandex.ru/album/19097174/track/94298678?utm_source=share",
+        )
+        .unwrap();
+        assert_eq!(link.track_id(), "94298678");
+        assert!(parse_track_link("94298678").is_err());
+        assert!(parse_track_link("https://music.yandex.ru/album/19097174").is_err());
     }
 }
