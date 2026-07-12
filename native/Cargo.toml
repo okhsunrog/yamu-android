@@ -1,0 +1,29 @@
+[package]
+name = "ya-mus-downloader-native"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lib]
+name = "ya_mus_downloader"
+crate-type = ["cdylib"]
+
+[dependencies]
+anyhow = "1"
+ffmpeg-next = { version = "8.1.0", default-features = false, features = ["build", "build-pic", "codec", "format"] }
+futures-util = "0.3"
+jni = "0.22.4"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream"] }
+tokio = { version = "1", features = ["fs", "io-util", "rt-multi-thread"] }
+yandex-music-api = { path = "../../ya-music", default-features = false, features = ["downloads", "media-ffmpeg"] }
+
+[patch.crates-io]
+ffmpeg-sys-next = { path = "../vendor/ffmpeg-sys-next" }
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+opt-level = "s"
+panic = "abort"
+strip = "symbols"
