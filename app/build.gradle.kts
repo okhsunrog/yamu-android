@@ -2,6 +2,7 @@ import org.gradle.api.tasks.Exec
 
 plugins {
     id("com.android.application")
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 android {
@@ -17,8 +18,7 @@ android {
         versionName = "0.1.0"
 
         ndk {
-            abiFilters += "arm64-v8a"
-            abiFilters += "x86_64"
+            abiFilters += listOf("arm64-v8a", "x86_64")
         }
     }
 
@@ -33,6 +33,22 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+
+    buildFeatures {
+        compose = true
+    }
+}
+
+dependencies {
+    val composeBom = platform("androidx.compose:compose-bom:2026.06.01")
+    implementation(composeBom)
+    implementation("androidx.activity:activity-compose:1.13.0")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+    implementation("rustls:rustls-platform-verifier:latest.release")
+    debugImplementation("androidx.compose.ui:ui-tooling")
 }
 
 val buildRust = tasks.register<Exec>("buildRust") {

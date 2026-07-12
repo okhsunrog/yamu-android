@@ -1,14 +1,24 @@
 # ya-mus-downloader
 
-Android client prototype for `yandex-music-api`. The UI accepts a Yandex Music
-OAuth token and a track URL, then downloads the best available quality into the
+Android client prototype for `yandex-music-api`. On first launch the app signs
+the user in with Yandex OAuth Device Flow: authorization happens on Yandex's
+official browser page and the access token is saved locally. The downloader UI
+then accepts a track link and saves the best available quality into the
 application's external Music directory. Numeric IDs are deliberately rejected.
 Track links can be pasted, shared to the application with Android `ACTION_SEND`,
-or opened directly with `ACTION_VIEW`. A shared link starts automatically when
-a saved token is available; otherwise the app fills the link and requests one.
+or opened directly with `ACTION_VIEW`. A shared link is retained through sign-in
+and starts automatically once authorization finishes.
 The app also publishes a rank-0 Sharing Shortcut named `Скачать` for the Direct
 Share row. Android retains final control over Sharesheet ordering; frequent use
 or manually pinning the target can move it ahead of other applications.
+
+The interface uses Jetpack Compose, Material 3, edge-to-edge drawing, and
+`WindowInsets.safeDrawing`, so content stays outside camera cutouts, status
+bars, and gesture navigation areas.
+
+## Screenshots
+
+![Yandex sign-in screen](screenshots/auth-home.png)
 
 Audio downloading, FLAC-in-MP4 normalization, M4A metadata, cover embedding,
 and complete validation run in Rust. The Android build enables the library's
@@ -35,8 +45,8 @@ Requirements:
 The first native build clones and compiles FFmpeg and therefore takes longer.
 The APK is written under `app/build/outputs/apk/debug/`.
 
-The token is stored only when the checkbox is enabled. It is encrypted with an
-app-specific AES-GCM key held by Android Keystore; preferences contain only the
-IV and ciphertext, and Android backup is disabled. This is an MVP; a subsequent
-iteration should replace direct token entry with OAuth Device Flow and add
-albums, playlists, progress, cancellation, and MediaStore export.
+The access token is encrypted with an app-specific AES-GCM key held by Android
+Keystore; preferences contain only the IV and ciphertext, and Android backup is
+disabled. The app never asks the user to copy or paste a token. This is an MVP;
+subsequent iterations can add refresh-token handling, albums, playlists,
+progress, cancellation, and MediaStore export.

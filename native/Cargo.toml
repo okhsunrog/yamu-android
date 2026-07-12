@@ -15,8 +15,10 @@ ffmpeg-next = { version = "8.1.0", default-features = false, features = ["build"
 futures-util = "0.3"
 jni = "0.22.4"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream"] }
+rustls-platform-verifier = "0.7"
+serde_json = "1"
 tokio = { version = "1", features = ["fs", "io-util", "rt-multi-thread"] }
-yandex-music-api = { path = "../../ya-music", default-features = false, features = ["downloads", "media-ffmpeg"] }
+yandex-music-api = { path = "../../ya-music", default-features = false, features = ["oauth", "downloads", "media-ffmpeg"] }
 
 [patch.crates-io]
 ffmpeg-sys-next = { path = "../vendor/ffmpeg-sys-next" }

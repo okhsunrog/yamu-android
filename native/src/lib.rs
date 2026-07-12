@@ -5,11 +5,12 @@ use futures_util::StreamExt as _;
 use jni::{
     EnvUnowned,
     errors::ThrowRuntimeExAndDefault,
-    objects::{JClass, JString},
+    objects::{JClass, JObject, JString},
 };
 use tokio::io::AsyncWriteExt as _;
 use yandex_music_api::{
     Client,
+    auth::DeviceAuth,
     media::{MediaBackend as _, TrackMetadata, ffmpeg::Ffmpeg, verify_audio_file, write_metadata},
     models::{AudioCodec, DownloadInfo, DownloadOptions},
     resource::TrackRef,
@@ -38,6 +39,23 @@ impl From<jni::errors::Error> for NativeError {
     }
 }
 
+impl From<yandex_music_api::Error> for NativeError {
+    fn from(error: yandex_music_api::Error) -> Self {
+        Self(format!("{:#}", anyhow::Error::new(error)))
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_okhsunrog_yamusdownloader_NativeBridge_initialize<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    context: JObject<'caller>,
+) {
+    unowned_env
+        .with_env(|env| rustls_platform_verifier::android::init_with_env(env, context))
+        .resolve::<ThrowRuntimeExAndDefault>()
+}
+
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_okhsunrog_yamusdownloader_NativeBridge_mediaBackend<'caller>(
     mut unowned_env: EnvUnowned<'caller>,
@@ -45,6 +63,51 @@ pub extern "system" fn Java_dev_okhsunrog_yamusdownloader_NativeBridge_mediaBack
 ) -> JString<'caller> {
     unowned_env
         .with_env(|env| JString::from_str(env, "ffmpeg-libav"))
+        .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_okhsunrog_yamusdownloader_NativeBridge_requestDeviceCode<
+    'caller,
+>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+) -> JString<'caller> {
+    unowned_env
+        .with_env(
+            |env| -> std::result::Result<JString<'caller>, NativeError> {
+                let runtime = runtime()?;
+                let code = runtime.block_on(DeviceAuth::new()?.request_device_code())?;
+                let response = serde_json::json!({
+                    "deviceCode": code.device_code,
+                    "userCode": code.user_code,
+                    "verificationUrl": code.verification_url,
+                    "expiresIn": code.expires_in,
+                    "interval": code.interval,
+                });
+                Ok(JString::from_str(env, response.to_string())?)
+            },
+        )
+        .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_okhsunrog_yamusdownloader_NativeBridge_pollDeviceToken<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    device_code: JString<'caller>,
+) -> JString<'caller> {
+    unowned_env
+        .with_env(
+            |env| -> std::result::Result<JString<'caller>, NativeError> {
+                let device_code = device_code.try_to_string(env)?;
+                let token =
+                    runtime()?.block_on(DeviceAuth::new()?.poll_device_token(&device_code))?;
+                let access_token =
+                    token.map_or_else(String::new, |token| token.into_access_token());
+                Ok(JString::from_str(env, access_token)?)
+            },
+        )
         .resolve::<ThrowRuntimeExAndDefault>()
 }
 
@@ -62,11 +125,7 @@ pub extern "system" fn Java_dev_okhsunrog_yamusdownloader_NativeBridge_downloadT
                 let token = token.try_to_string(env)?;
                 let track_reference = track_reference.try_to_string(env)?;
                 let output_directory = output_directory.try_to_string(env)?;
-                let runtime = tokio::runtime::Builder::new_multi_thread()
-                    .enable_all()
-                    .build()
-                    .context("failed to create async runtime")?;
-                let path = runtime.block_on(download_track(
+                let path = runtime()?.block_on(download_track(
                     &token,
                     &track_reference,
                     Path::new(&output_directory),
@@ -75,6 +134,13 @@ pub extern "system" fn Java_dev_okhsunrog_yamusdownloader_NativeBridge_downloadT
             },
         )
         .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+fn runtime() -> Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("failed to create async runtime")
 }
 
 async fn download_track(token: &str, reference: &str, output_directory: &Path) -> Result<String> {
