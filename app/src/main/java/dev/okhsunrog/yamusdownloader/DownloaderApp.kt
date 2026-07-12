@@ -70,6 +70,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -428,14 +429,23 @@ private fun DownloaderScreen(
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(18.dp),
-                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f),
+                color = lerp(
+                    MaterialTheme.colorScheme.surface,
+                    Color(0xFF2E7D32),
+                    if (isSystemInDarkTheme()) 0.22f else 0.12f,
+                ),
+                contentColor = MaterialTheme.colorScheme.onSurface,
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 15.dp, vertical = 11.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(9.dp),
                 ) {
-                    Icon(Icons.Rounded.CheckCircle, contentDescription = null)
+                    Icon(
+                        Icons.Rounded.CheckCircle,
+                        contentDescription = null,
+                        tint = Color(0xFF66BB6A),
+                    )
                     Text("Вход выполнен", fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.weight(1f))
                     TextButton(onClick = onLogout) { Text("Выйти") }
@@ -541,6 +551,7 @@ private fun DownloaderScreen(
 private fun AppScaffold(content: @Composable () -> Unit) {
     Scaffold(
         containerColor = Color.Transparent,
+        contentColor = MaterialTheme.colorScheme.onBackground,
         contentWindowInsets = WindowInsets.safeDrawing,
     ) { safePadding ->
         Box(
@@ -549,7 +560,11 @@ private fun AppScaffold(content: @Composable () -> Unit) {
                 .background(
                     Brush.verticalGradient(
                         listOf(
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+                            lerp(
+                                MaterialTheme.colorScheme.background,
+                                MaterialTheme.colorScheme.primary,
+                                if (isSystemInDarkTheme()) 0.10f else 0.16f,
+                            ),
                             MaterialTheme.colorScheme.background,
                             MaterialTheme.colorScheme.background,
                         ),
@@ -651,7 +666,10 @@ private fun StatusCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = color.copy(alpha = 0.12f)),
+        colors = CardDefaults.cardColors(
+            containerColor = lerp(MaterialTheme.colorScheme.surface, color, 0.14f),
+            contentColor = MaterialTheme.colorScheme.onSurface,
+        ),
     ) {
         Row(
             modifier = Modifier.padding(16.dp),
@@ -672,7 +690,8 @@ private fun StatusCard(
 private fun FeaturePill(icon: ImageVector, text: String) {
     Surface(
         shape = CircleShape,
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
@@ -698,15 +717,22 @@ private val LightColors = lightColorScheme(
 )
 
 private val DarkColors = darkColorScheme(
-    primary = Color(0xFFFFD740),
+    primary = Color(0xFFFFCC00),
     onPrimary = Color(0xFF201B00),
-    primaryContainer = Color(0xFF544600),
-    onPrimaryContainer = Color(0xFFFFE680),
-    secondary = Color(0xFFD1C69A),
-    tertiary = Color(0xFFB5CCBA),
-    background = Color(0xFF13130F),
-    surface = Color(0xFF1D1D18),
-    surfaceVariant = Color(0xFF49473C),
+    primaryContainer = Color(0xFF3D3400),
+    onPrimaryContainer = Color(0xFFFFE477),
+    secondary = Color(0xFFD2C89B),
+    onSecondary = Color(0xFF373016),
+    secondaryContainer = Color(0xFF292A22),
+    onSecondaryContainer = Color(0xFFE9E7DD),
+    tertiary = Color(0xFFAFCDB6),
+    background = Color(0xFF0F100D),
+    onBackground = Color(0xFFF2F0E7),
+    surface = Color(0xFF191A16),
+    onSurface = Color(0xFFF2F0E7),
+    surfaceVariant = Color(0xFF292A24),
+    onSurfaceVariant = Color(0xFFC9C7BD),
+    outline = Color(0xFF918F86),
 )
 
 @Composable

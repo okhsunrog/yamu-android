@@ -22,6 +22,8 @@ bars, and gesture navigation areas.
 
 ![Yandex sign-in screen](screenshots/auth-home.png)
 
+![Downloader in dark theme](screenshots/dark-home.png)
+
 Audio downloading, FLAC-in-MP4 normalization, M4A metadata, cover embedding,
 and complete validation run in Rust. The Android build enables the library's
 in-process `media-ffmpeg` backend and statically builds FFmpeg 8.1 through
