@@ -17,5 +17,9 @@ final class NativeBridge {
 
     static native String pollDeviceToken(String deviceCode);
 
+    static native String downloadProgress();
+
+    static native void cancelDownload();
+
     static native String downloadTrack(String token, String trackReference, String outputDirectory);
 }

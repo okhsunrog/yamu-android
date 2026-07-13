@@ -3,4 +3,7 @@
     <cache-path
         name="downloads"
         path="downloads/" />
+    <external-files-path
+        name="music"
+        path="Music/" />
 </paths>

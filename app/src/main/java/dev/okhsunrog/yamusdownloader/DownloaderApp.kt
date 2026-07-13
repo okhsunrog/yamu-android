@@ -49,6 +49,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -60,6 +61,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -83,6 +85,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.util.Locale
 
 private data class DeviceSession(
     val deviceCode: String,
@@ -100,18 +103,29 @@ private sealed interface AuthStatus {
     data class Failure(val message: String) : AuthStatus
 }
 
-private sealed interface DownloadStatus {
+internal sealed interface DownloadStatus {
     data object Idle : DownloadStatus
-    data object Downloading : DownloadStatus
+    data class Downloading(val progress: NativeDownloadProgress) : DownloadStatus
+    data object Cancelling : DownloadStatus
+    data object Cancelled : DownloadStatus
     data class Success(val track: PublishedTrack) : DownloadStatus
     data class Failure(val message: String) : DownloadStatus
 }
+
+internal data class NativeDownloadProgress(
+    val phase: String = "preparing",
+    val downloaded: Long = 0,
+    val total: Long? = null,
+    val cancellable: Boolean = true,
+)
+
+internal val DownloadStatus.isBusy: Boolean
+    get() = this is DownloadStatus.Downloading || this is DownloadStatus.Cancelling
 
 @Composable
 internal fun DownloaderApp(
     tokenStore: TokenStore,
     incomingLink: IncomingLink?,
-    stagingDirectory: String,
 ) {
     var accessToken by remember { mutableStateOf(tokenStore.load()) }
 
@@ -121,9 +135,7 @@ internal fun DownloaderApp(
     ) { authenticated ->
         if (authenticated) {
             DownloaderScreen(
-                accessToken = accessToken,
                 incomingLink = incomingLink,
-                stagingDirectory = stagingDirectory,
                 onLogout = {
                     tokenStore.clear()
                     accessToken = ""
@@ -378,36 +390,22 @@ private fun AuthorizationCode(
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun DownloaderScreen(
-    accessToken: String,
     incomingLink: IncomingLink?,
-    stagingDirectory: String,
     onLogout: () -> Unit,
 ) {
     var link by rememberSaveable { mutableStateOf(incomingLink?.url.orEmpty()) }
-    var status by remember { mutableStateOf<DownloadStatus>(DownloadStatus.Idle) }
-    val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val status by DownloadCoordinator.status.collectAsState()
     val backend = remember { NativeBridge.mediaBackend() }
 
-    suspend fun download(rawLink: String) {
+    fun download(rawLink: String) {
         val normalizedLink = MainActivity.extractTrackLink(rawLink)
-        when {
-            normalizedLink == null -> {
-                status = DownloadStatus.Failure("Вставьте ссылку на трек из Яндекс Музыки")
-                return
-            }
+        if (normalizedLink == null) {
+            DownloadCoordinator.reject("Вставьте ссылку на трек из Яндекс Музыки")
+            return
         }
         link = normalizedLink
-        status = DownloadStatus.Downloading
-        status = try {
-            val track = withContext(Dispatchers.IO) {
-                val path = NativeBridge.downloadTrack(accessToken, normalizedLink, stagingDirectory)
-                TrackPublisher.publish(context, path)
-            }
-            DownloadStatus.Success(track)
-        } catch (error: Throwable) {
-            DownloadStatus.Failure(error.message ?: "Неизвестная ошибка")
-        }
+        DownloadCoordinator.start(context, normalizedLink)
     }
 
     LaunchedEffect(incomingLink?.sequence) {
@@ -478,10 +476,10 @@ private fun DownloaderScreen(
                         value = link,
                         onValueChange = {
                             link = it
-                            if (status !is DownloadStatus.Downloading) status = DownloadStatus.Idle
+                            if (!status.isBusy) DownloadCoordinator.reset()
                         },
                         modifier = Modifier.fillMaxWidth(),
-                        enabled = status !is DownloadStatus.Downloading,
+                        enabled = !status.isBusy,
                         label = { Text("Ссылка на трек") },
                         placeholder = { Text("music.yandex.ru/album/…/track/…") },
                         leadingIcon = { Icon(Icons.Rounded.Link, contentDescription = null) },
@@ -497,9 +495,9 @@ private fun DownloaderScreen(
                         shape = RoundedCornerShape(18.dp),
                     )
                     Button(
-                        onClick = { scope.launch { download(link) } },
+                        onClick = { download(link) },
                         modifier = Modifier.fillMaxWidth().height(58.dp),
-                        enabled = status !is DownloadStatus.Downloading,
+                        enabled = !status.isBusy,
                         shape = RoundedCornerShape(18.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.primary,
@@ -507,7 +505,7 @@ private fun DownloaderScreen(
                         ),
                     ) {
                         AnimatedContent(
-                            targetState = status is DownloadStatus.Downloading,
+                            targetState = status.isBusy,
                             label = "download-button",
                         ) { downloading ->
                             Row(
@@ -534,6 +532,12 @@ private fun DownloaderScreen(
             DownloadStatusCard(
                 status = status,
                 onShare = { track -> TrackPublisher.share(context, track) },
+                onCancel = {
+                    val current = status as? DownloadStatus.Downloading
+                    if (current?.progress?.cancellable == true) {
+                        DownloadCoordinator.cancel(context)
+                    }
+                },
             )
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -624,14 +628,46 @@ private fun AppHeader(subtitle: String, onLogout: (() -> Unit)? = null) {
 private fun DownloadStatusCard(
     status: DownloadStatus,
     onShare: (PublishedTrack) -> Unit,
+    onCancel: () -> Unit,
 ) {
     when (status) {
         DownloadStatus.Idle -> Unit
-        DownloadStatus.Downloading -> StatusCard(
+        is DownloadStatus.Downloading -> StatusCard(
+            icon = Icons.Rounded.CloudDownload,
+            title = "Скачивание",
+            detail = progressDescription(status.progress),
+            color = MaterialTheme.colorScheme.primary,
+            action = {
+                val total = status.progress.total
+                if (total != null && total > 0) {
+                    LinearProgressIndicator(
+                        progress = {
+                            (status.progress.downloaded.toFloat() / total.toFloat())
+                                .coerceIn(0f, 1f)
+                        },
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    )
+                } else {
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    )
+                }
+                if (status.progress.cancellable) {
+                    TextButton(onClick = onCancel) { Text("Отменить") }
+                }
+            },
+        )
+        DownloadStatus.Cancelling -> StatusCard(
             Icons.Rounded.CloudDownload,
-            "Скачивание",
-            "Получаю аудио и записываю метаданные…",
+            "Отменяю скачивание",
+            "Останавливаю запрос и удаляю временный файл…",
             MaterialTheme.colorScheme.primary,
+        )
+        DownloadStatus.Cancelled -> StatusCard(
+            Icons.Rounded.Info,
+            "Скачивание отменено",
+            "Временный файл удалён. Можно попробовать снова.",
+            MaterialTheme.colorScheme.onSurfaceVariant,
         )
         is DownloadStatus.Success -> StatusCard(
             icon = Icons.Rounded.CheckCircle,
@@ -677,12 +713,55 @@ private fun StatusCard(
             verticalAlignment = Alignment.Top,
         ) {
             Icon(icon, contentDescription = null, tint = color)
-            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
                 Text(title, fontWeight = FontWeight.SemiBold, color = color)
                 Text(detail, style = MaterialTheme.typography.bodyMedium)
                 action?.invoke()
             }
         }
+    }
+}
+
+internal fun readNativeProgress(): NativeDownloadProgress {
+    val response = JSONObject(NativeBridge.downloadProgress())
+    return NativeDownloadProgress(
+        phase = response.optString("phase", "preparing"),
+        downloaded = response.optLong("downloaded", 0),
+        total = if (response.isNull("total")) null else response.optLong("total"),
+    )
+}
+
+internal fun progressDescription(progress: NativeDownloadProgress): String {
+    val phase = when (progress.phase) {
+        "preparing" -> "Получаю информацию о треке…"
+        "connecting" -> "Подключаюсь к серверу…"
+        "retrying" -> "Повторяю подключение…"
+        "downloading" -> "Скачиваю аудио"
+        "normalizing" -> "Преобразую в FLAC…"
+        "finalizing" -> "Сохраняю файл…"
+        "artwork" -> "Загружаю обложку…"
+        "metadata" -> "Записываю метаданные и обложку…"
+        "verifying" -> "Проверяю аудиофайл…"
+        "publishing" -> "Добавляю трек в Music/Ya Music…"
+        else -> "Обрабатываю трек…"
+    }
+    if (progress.phase != "downloading" || progress.downloaded <= 0) return phase
+    val downloaded = formatBytes(progress.downloaded)
+    return progress.total
+        ?.takeIf { it > 0 }
+        ?.let { "$phase · $downloaded / ${formatBytes(it)}" }
+        ?: "$phase · $downloaded"
+}
+
+private fun formatBytes(bytes: Long): String {
+    val mebibytes = bytes.toDouble() / (1024.0 * 1024.0)
+    return if (mebibytes >= 1) {
+        String.format(Locale.getDefault(), "%.1f МБ", mebibytes)
+    } else {
+        String.format(Locale.getDefault(), "%.0f КБ", bytes / 1024.0)
     }
 }
 

@@ -1,20 +1,46 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::Path,
+    sync::{LazyLock, Mutex, OnceLock},
+};
 
 use anyhow::{Context as _, Result, bail};
-use futures_util::StreamExt as _;
 use jni::{
     EnvUnowned,
     errors::ThrowRuntimeExAndDefault,
     objects::{JClass, JObject, JString},
 };
-use tokio::io::AsyncWriteExt as _;
 use yandex_music_api::{
     Client,
     auth::DeviceAuth,
-    media::{MediaBackend as _, TrackMetadata, ffmpeg::Ffmpeg, verify_audio_file, write_metadata},
-    models::{AudioCodec, DownloadInfo, DownloadOptions},
+    downloader::{CancellationToken, DownloadEvent, DownloadPhase, DownloadRequest, Downloader},
+    media::{TrackMetadata, ffmpeg::Ffmpeg, verify_audio_file, write_metadata},
+    models::{AudioCodec, DownloadOptions},
     resource::TrackRef,
 };
+
+#[derive(Clone, Debug, Default)]
+struct NativeProgress {
+    phase: &'static str,
+    downloaded: u64,
+    total: Option<u64>,
+}
+
+static DOWNLOAD_PROGRESS: LazyLock<Mutex<NativeProgress>> =
+    LazyLock::new(|| Mutex::new(NativeProgress::default()));
+static ACTIVE_DOWNLOAD: LazyLock<Mutex<Option<CancellationToken>>> =
+    LazyLock::new(|| Mutex::new(None));
+static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+static ARTWORK_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
+
+struct ActiveDownloadGuard;
+
+impl Drop for ActiveDownloadGuard {
+    fn drop(&mut self) {
+        *ACTIVE_DOWNLOAD
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
+    }
+}
 
 #[derive(Debug)]
 struct NativeError(String);
@@ -63,6 +89,48 @@ pub extern "system" fn Java_dev_okhsunrog_yamusdownloader_NativeBridge_mediaBack
 ) -> JString<'caller> {
     unowned_env
         .with_env(|env| JString::from_str(env, "ffmpeg-libav"))
+        .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_okhsunrog_yamusdownloader_NativeBridge_downloadProgress<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+) -> JString<'caller> {
+    unowned_env
+        .with_env(
+            |env| -> std::result::Result<JString<'caller>, NativeError> {
+                let progress = DOWNLOAD_PROGRESS
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .clone();
+                let response = serde_json::json!({
+                    "phase": progress.phase,
+                    "downloaded": progress.downloaded,
+                    "total": progress.total,
+                });
+                Ok(JString::from_str(env, response.to_string())?)
+            },
+        )
+        .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_okhsunrog_yamusdownloader_NativeBridge_cancelDownload<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+) {
+    unowned_env
+        .with_env(|_| -> std::result::Result<(), NativeError> {
+            if let Some(cancellation) = ACTIVE_DOWNLOAD
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_ref()
+            {
+                cancellation.cancel();
+            }
+            Ok(())
+        })
         .resolve::<ThrowRuntimeExAndDefault>()
 }
 
@@ -136,14 +204,32 @@ pub extern "system" fn Java_dev_okhsunrog_yamusdownloader_NativeBridge_downloadT
         .resolve::<ThrowRuntimeExAndDefault>()
 }
 
-fn runtime() -> Result<tokio::runtime::Runtime> {
-    tokio::runtime::Builder::new_multi_thread()
+fn runtime() -> Result<&'static tokio::runtime::Runtime> {
+    if let Some(runtime) = RUNTIME.get() {
+        return Ok(runtime);
+    }
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .context("failed to create async runtime")
+        .context("failed to create async runtime")?;
+    let _ = RUNTIME.set(runtime);
+    Ok(RUNTIME.get().expect("runtime was initialized"))
 }
 
 async fn download_track(token: &str, reference: &str, output_directory: &Path) -> Result<String> {
+    let cancellation = CancellationToken::new();
+    {
+        let mut active = ACTIVE_DOWNLOAD
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if active.is_some() {
+            bail!("another download is already running");
+        }
+        *active = Some(cancellation.clone());
+    }
+    let _active_guard = ActiveDownloadGuard;
+    set_native_phase("preparing");
     let track_reference = parse_track_link(reference)?;
     let track_id = track_reference.track_id();
     let client = Client::new(token).context("invalid OAuth token")?;
@@ -162,8 +248,8 @@ async fn download_track(token: &str, reference: &str, output_directory: &Path) -
     let info = client
         .download_info(uid, track_id, &DownloadOptions::default())
         .await?;
-    if info.decryption_key.is_some() {
-        bail!("the server returned encrypted audio");
+    if cancellation.is_cancelled() {
+        bail!("download was cancelled");
     }
 
     tokio::fs::create_dir_all(output_directory).await?;
@@ -186,23 +272,18 @@ async fn download_track(token: &str, reference: &str, output_directory: &Path) -
         safe_file_component(title)
     ));
     let backend = Ffmpeg;
-
-    if matches!(info.codec, AudioCodec::FlacMp4) {
-        let source = temporary_path(&destination, "source.m4a");
-        download_audio(&client, &info, &source).await?;
-        let result = backend
-            .remux_flac(source.clone(), destination.clone(), true)
-            .await;
-        let _ = tokio::fs::remove_file(source).await;
-        result?;
-    } else {
-        let temporary = temporary_path(&destination, "download.part");
-        download_audio(&client, &info, &temporary).await?;
-        if tokio::fs::try_exists(&destination).await? {
-            tokio::fs::remove_file(&destination).await?;
-        }
-        tokio::fs::rename(temporary, &destination).await?;
-    }
+    let result = Downloader::new(client, backend.clone())
+        .download(
+            DownloadRequest {
+                info,
+                destination,
+                replace: true,
+            },
+            cancellation.clone(),
+            update_download_event,
+        )
+        .await?;
+    let destination = result.path;
 
     let album = track.albums.first();
     let album_artist = album.map(|album| {
@@ -228,9 +309,25 @@ async fn download_track(token: &str, reference: &str, output_directory: &Path) -
             .and_then(|position| position.volume),
         lyrics: None,
     };
+    set_native_phase("artwork");
     let artwork = fetch_artwork(&track).await;
+    if cancellation.is_cancelled() {
+        let _ = tokio::fs::remove_file(&destination).await;
+        bail!("download was cancelled");
+    }
+    set_native_phase("metadata");
     write_metadata(&backend, &destination, &metadata, artwork).await?;
+    if cancellation.is_cancelled() {
+        let _ = tokio::fs::remove_file(&destination).await;
+        bail!("download was cancelled");
+    }
+    set_native_phase("verifying");
     verify_audio_file(&backend, &destination, extension).await?;
+    if cancellation.is_cancelled() {
+        let _ = tokio::fs::remove_file(&destination).await;
+        bail!("download was cancelled");
+    }
+    set_native_phase("completed");
     Ok(destination.display().to_string())
 }
 
@@ -241,32 +338,6 @@ fn parse_track_link(reference: &str) -> Result<TrackRef> {
     reference.parse().context("invalid Yandex Music track link")
 }
 
-async fn download_audio(client: &Client, info: &DownloadInfo, destination: &Path) -> Result<()> {
-    let mut last_error = None;
-    for url in &info.urls {
-        let result = async {
-            let response = client.open_audio_stream(url).await?;
-            let mut stream = response.bytes_stream();
-            let mut file = tokio::fs::File::create(destination).await?;
-            while let Some(chunk) = stream.next().await {
-                file.write_all(&chunk?).await?;
-            }
-            file.flush().await?;
-            file.sync_all().await?;
-            Ok::<_, anyhow::Error>(())
-        }
-        .await;
-        match result {
-            Ok(()) => return Ok(()),
-            Err(error) => {
-                last_error = Some(error);
-                let _ = tokio::fs::remove_file(destination).await;
-            }
-        }
-    }
-    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("the server returned no download URLs")))
-}
-
 async fn fetch_artwork(track: &yandex_music_api::models::Track) -> Option<Vec<u8>> {
     let url = track.cover_url("600x600").or_else(|| {
         track
@@ -274,7 +345,9 @@ async fn fetch_artwork(track: &yandex_music_api::models::Track) -> Option<Vec<u8
             .first()
             .and_then(|album| album.cover_url("600x600"))
     })?;
-    reqwest::get(url)
+    ARTWORK_CLIENT
+        .get(url)
+        .send()
         .await
         .ok()?
         .error_for_status()
@@ -313,15 +386,36 @@ fn safe_file_component(value: &str) -> String {
     }
 }
 
-fn temporary_path(destination: &Path, suffix: &str) -> PathBuf {
-    let name = destination
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy();
-    destination
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(format!(".{name}.{}.{suffix}", std::process::id()))
+fn set_native_phase(phase: &'static str) {
+    let mut progress = DOWNLOAD_PROGRESS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    progress.phase = phase;
+    if phase == "preparing" {
+        progress.downloaded = 0;
+        progress.total = None;
+    }
+}
+
+fn update_download_event(event: DownloadEvent) {
+    let mut progress = DOWNLOAD_PROGRESS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    match event {
+        DownloadEvent::PhaseChanged(phase) => {
+            progress.phase = match phase {
+                DownloadPhase::Connecting => "connecting",
+                DownloadPhase::Downloading => "downloading",
+                DownloadPhase::Normalizing => "normalizing",
+                DownloadPhase::Finalizing => "finalizing",
+            };
+        }
+        DownloadEvent::Progress { downloaded, total } => {
+            progress.downloaded = downloaded;
+            progress.total = total;
+        }
+        DownloadEvent::Retrying { .. } => progress.phase = "retrying",
+    }
 }
 
 #[cfg(test)]

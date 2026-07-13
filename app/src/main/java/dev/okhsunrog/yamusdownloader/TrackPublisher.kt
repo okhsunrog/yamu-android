@@ -7,6 +7,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.provider.OpenableColumns
 import android.provider.MediaStore
 import androidx.core.content.FileProvider
 import java.io.File
@@ -27,12 +28,26 @@ internal object TrackPublisher {
         val mimeType = mimeTypeFor(source.extension)
 
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            val musicDirectory = requireNotNull(
+                context.getExternalFilesDir(Environment.DIRECTORY_MUSIC),
+            ).resolve(ALBUM_DIRECTORY)
+            check(musicDirectory.mkdirs() || musicDirectory.isDirectory) {
+                "Android не смог создать папку для музыки"
+            }
+            val destination = uniqueDestination(musicDirectory, source.name)
+            source.copyTo(destination)
+            source.delete()
             val uri = FileProvider.getUriForFile(
                 context,
                 "${context.packageName}.files",
-                source,
+                destination,
             )
-            return PublishedTrack(uri, source.name, "папке приложения", mimeType)
+            return PublishedTrack(
+                uri,
+                destination.name,
+                "папке приложения Music/$ALBUM_DIRECTORY",
+                mimeType,
+            )
         }
 
         val resolver = context.contentResolver
@@ -66,7 +81,7 @@ internal object TrackPublisher {
 
         return PublishedTrack(
             uri = uri,
-            displayName = source.name,
+            displayName = displayName(context, uri, source.name),
             location = "Music/$ALBUM_DIRECTORY",
             mimeType = mimeType,
         )
@@ -88,5 +103,27 @@ internal object TrackPublisher {
         "mp3" -> "audio/mpeg"
         "aac" -> "audio/aac"
         else -> "audio/*"
+    }
+
+    private fun displayName(context: Context, uri: Uri, fallback: String): String =
+        context.contentResolver.query(
+            uri,
+            arrayOf(OpenableColumns.DISPLAY_NAME),
+            null,
+            null,
+            null,
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0) else null
+        } ?: fallback
+
+    private fun uniqueDestination(directory: File, requestedName: String): File {
+        val requested = directory.resolve(requestedName)
+        if (!requested.exists()) return requested
+
+        val extension = requested.extension.takeIf(String::isNotEmpty)?.let { ".$it" }.orEmpty()
+        val baseName = requested.name.removeSuffix(extension)
+        return generateSequence(1) { it + 1 }
+            .map { directory.resolve("$baseName ($it)$extension") }
+            .first { !it.exists() }
     }
 }

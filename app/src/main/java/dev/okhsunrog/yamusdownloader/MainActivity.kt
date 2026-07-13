@@ -33,7 +33,6 @@ class MainActivity : ComponentActivity() {
                 DownloaderApp(
                     tokenStore = tokenStore,
                     incomingLink = incomingLink,
-                    stagingDirectory = cacheDir.resolve("downloads").absolutePath,
                 )
             }
         }
@@ -78,7 +77,7 @@ class MainActivity : ComponentActivity() {
         private const val SHARE_CATEGORY =
             "dev.okhsunrog.yamusdownloader.category.DOWNLOAD"
         private val YANDEX_MUSIC_LINK = Pattern.compile(
-            "https://music\\.yandex\\.ru/[^\\s]+",
+            "https://music\\.yandex\\.ru/album/\\d+/track/\\d+(?:\\?[^\\s]*)?",
         )
 
         fun extractTrackLink(text: String?): String? {

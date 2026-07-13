@@ -47,7 +47,7 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
-    implementation("rustls:rustls-platform-verifier:latest.release")
+    implementation("rustls:rustls-platform-verifier:0.1.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
 
