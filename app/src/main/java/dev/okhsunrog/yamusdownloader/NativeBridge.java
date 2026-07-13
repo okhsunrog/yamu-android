@@ -21,5 +21,10 @@ final class NativeBridge {
 
     static native void cancelDownload();
 
-    static native String downloadTrack(String token, String trackReference, String outputDirectory);
+    static native String downloadResource(
+            String token,
+            String resourceReference,
+            String outputDirectory,
+            boolean preferMp3
+    );
 }

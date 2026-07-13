@@ -41,6 +41,7 @@ import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.OpenInBrowser
 import androidx.compose.material.icons.rounded.Security
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -51,10 +52,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
@@ -108,7 +112,7 @@ internal sealed interface DownloadStatus {
     data class Downloading(val progress: NativeDownloadProgress) : DownloadStatus
     data object Cancelling : DownloadStatus
     data object Cancelled : DownloadStatus
-    data class Success(val track: PublishedTrack) : DownloadStatus
+    data class Success(val download: PublishedDownload) : DownloadStatus
     data class Failure(val message: String) : DownloadStatus
 }
 
@@ -117,10 +121,18 @@ internal data class NativeDownloadProgress(
     val downloaded: Long = 0,
     val total: Long? = null,
     val cancellable: Boolean = true,
+    val item: Int = 0,
+    val itemTotal: Int = 0,
+    val itemLabel: String = "",
 )
 
 internal val DownloadStatus.isBusy: Boolean
     get() = this is DownloadStatus.Downloading || this is DownloadStatus.Cancelling
+
+private enum class AppSection {
+    Download,
+    Settings,
+}
 
 @Composable
 internal fun DownloaderApp(
@@ -226,7 +238,7 @@ private fun AuthScreen(
                 .padding(horizontal = 20.dp, vertical = 18.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
-            AppHeader(subtitle = "Треки по ссылке — в лучшем качестве")
+            AppHeader(subtitle = "Музыка по ссылке — в лучшем качестве")
 
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -272,7 +284,7 @@ private fun AuthScreen(
                         StatusCard(
                             icon = Icons.Rounded.Link,
                             title = "Ссылка уже получена",
-                            detail = "После входа трек начнёт скачиваться автоматически.",
+                            detail = "После входа музыка начнёт скачиваться автоматически.",
                             color = MaterialTheme.colorScheme.tertiary,
                         )
                     }
@@ -397,11 +409,14 @@ private fun DownloaderScreen(
     val context = LocalContext.current
     val status by DownloadCoordinator.status.collectAsState()
     val backend = remember { NativeBridge.mediaBackend() }
+    val settingsStore = remember(context) { SettingsStore(context) }
+    var selectedSection by rememberSaveable { mutableStateOf(AppSection.Download) }
+    var preferMp3 by rememberSaveable { mutableStateOf(settingsStore.preferMp3) }
 
     fun download(rawLink: String) {
-        val normalizedLink = MainActivity.extractTrackLink(rawLink)
+        val normalizedLink = MainActivity.extractResourceLink(rawLink)
         if (normalizedLink == null) {
-            DownloadCoordinator.reject("Вставьте ссылку на трек из Яндекс Музыки")
+            DownloadCoordinator.reject("Вставьте ссылку на трек, альбом или плейлист")
             return
         }
         link = normalizedLink
@@ -410,12 +425,31 @@ private fun DownloaderScreen(
 
     LaunchedEffect(incomingLink?.sequence) {
         incomingLink ?: return@LaunchedEffect
+        selectedSection = AppSection.Download
         link = incomingLink.url
         download(incomingLink.url)
     }
 
-    AppScaffold {
-        Column(
+    AppScaffold(
+        bottomBar = {
+            NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+                NavigationBarItem(
+                    selected = selectedSection == AppSection.Download,
+                    onClick = { selectedSection = AppSection.Download },
+                    icon = { Icon(Icons.Rounded.CloudDownload, contentDescription = null) },
+                    label = { Text("Скачать") },
+                )
+                NavigationBarItem(
+                    selected = selectedSection == AppSection.Settings,
+                    onClick = { selectedSection = AppSection.Settings },
+                    icon = { Icon(Icons.Rounded.Settings, contentDescription = null) },
+                    label = { Text("Настройки") },
+                )
+            }
+        },
+    ) {
+        when (selectedSection) {
+            AppSection.Download -> Column(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
@@ -468,7 +502,7 @@ private fun DownloaderScreen(
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        text = "Вставьте ссылку на трек или отправьте её через «Поделиться».",
+                        text = "Вставьте ссылку на трек, альбом или плейлист либо отправьте её через «Поделиться».",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -480,8 +514,8 @@ private fun DownloaderScreen(
                         },
                         modifier = Modifier.fillMaxWidth(),
                         enabled = !status.isBusy,
-                        label = { Text("Ссылка на трек") },
-                        placeholder = { Text("music.yandex.ru/album/…/track/…") },
+                        label = { Text("Ссылка на музыку") },
+                        placeholder = { Text("Трек, альбом или плейлист") },
                         leadingIcon = { Icon(Icons.Rounded.Link, contentDescription = null) },
                         trailingIcon = {
                             AnimatedVisibility(link.isNotBlank()) {
@@ -521,7 +555,7 @@ private fun DownloaderScreen(
                                     Text("Скачиваю…")
                                 } else {
                                     Icon(Icons.Rounded.CloudDownload, contentDescription = null)
-                                    Text("Скачать трек", fontWeight = FontWeight.SemiBold)
+                                    Text("Скачать", fontWeight = FontWeight.SemiBold)
                                 }
                             }
                         }
@@ -546,17 +580,102 @@ private fun DownloaderScreen(
                 FeaturePill(Icons.Rounded.Share, "Принимает shared-ссылки")
                 FeaturePill(Icons.Rounded.CheckCircle, "Лучшее качество")
             }
-            Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(4.dp))
+            }
+
+            AppSection.Settings -> SettingsContent(
+                preferMp3 = preferMp3,
+                onPreferMp3Change = { enabled ->
+                    preferMp3 = enabled
+                    settingsStore.preferMp3 = enabled
+                },
+                onLogout = onLogout,
+            )
         }
     }
 }
 
 @Composable
-private fun AppScaffold(content: @Composable () -> Unit) {
+private fun SettingsContent(
+    preferMp3: Boolean,
+    onPreferMp3Change: (Boolean) -> Unit,
+    onLogout: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 18.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp),
+    ) {
+        AppHeader(subtitle = "Настройки скачивания", onLogout = onLogout)
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(28.dp),
+            colors = CardDefaults.elevatedCardColors(
+                containerColor = MaterialTheme.colorScheme.surface,
+            ),
+            elevation = CardDefaults.elevatedCardElevation(defaultElevation = 3.dp),
+        ) {
+            Column(
+                modifier = Modifier.padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                Text(
+                    text = "Формат аудио",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text(
+                            text = "MP3 вместо AAC/M4A",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            text = "Перекодировать AAC/M4A через FFmpeg и libmp3lame " +
+                                "в MP3 320 кбит/с. FLAC и готовые MP3 не изменяются.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = preferMp3,
+                        onCheckedChange = onPreferMp3Change,
+                    )
+                }
+            }
+        }
+
+        StatusCard(
+            icon = Icons.Rounded.Info,
+            title = "О качестве",
+            detail = "Перекодирование AAC в MP3 не улучшает исходный звук и занимает больше " +
+                "времени и энергии. Включайте его только для совместимости с устройствами.",
+            color = MaterialTheme.colorScheme.tertiary,
+        )
+    }
+}
+
+@Composable
+private fun AppScaffold(
+    bottomBar: (@Composable () -> Unit)? = null,
+    content: @Composable () -> Unit,
+) {
     Scaffold(
         containerColor = Color.Transparent,
         contentColor = MaterialTheme.colorScheme.onBackground,
         contentWindowInsets = WindowInsets.safeDrawing,
+        bottomBar = { bottomBar?.invoke() },
     ) { safePadding ->
         Box(
             modifier = Modifier
@@ -671,14 +790,21 @@ private fun DownloadStatusCard(
         )
         is DownloadStatus.Success -> StatusCard(
             icon = Icons.Rounded.CheckCircle,
-            title = "Трек сохранён",
-            detail = "${status.track.location}/${status.track.displayName}",
+            title = if (status.download.isCollection) "Коллекция сохранена" else "Трек сохранён",
+            detail = if (!status.download.isCollection) {
+                status.download.shareTrack?.let { "${it.location}/${it.displayName}" }
+                    ?: status.download.location
+            } else {
+                "${status.download.title} · ${status.download.fileCount} треков\n${status.download.location}"
+            },
             color = Color(0xFF2E7D32),
             action = {
-                TextButton(onClick = { onShare(status.track) }) {
-                    Icon(Icons.Rounded.Share, contentDescription = null)
-                    Spacer(Modifier.size(6.dp))
-                    Text("Поделиться")
+                status.download.shareTrack?.let { track ->
+                    TextButton(onClick = { onShare(track) }) {
+                        Icon(Icons.Rounded.Share, contentDescription = null)
+                        Spacer(Modifier.size(6.dp))
+                        Text("Поделиться")
+                    }
                 }
             },
         )
@@ -731,6 +857,9 @@ internal fun readNativeProgress(): NativeDownloadProgress {
         phase = response.optString("phase", "preparing"),
         downloaded = response.optLong("downloaded", 0),
         total = if (response.isNull("total")) null else response.optLong("total"),
+        item = response.optInt("item", 0),
+        itemTotal = response.optInt("itemTotal", 0),
+        itemLabel = response.optString("itemLabel", ""),
     )
 }
 
@@ -740,20 +869,27 @@ internal fun progressDescription(progress: NativeDownloadProgress): String {
         "connecting" -> "Подключаюсь к серверу…"
         "retrying" -> "Повторяю подключение…"
         "downloading" -> "Скачиваю аудио"
-        "normalizing" -> "Преобразую в FLAC…"
+        "normalizing" -> "Меняю контейнер без перекодирования…"
+        "transcoding_mp3" -> "Конвертирую в MP3…"
         "finalizing" -> "Сохраняю файл…"
         "artwork" -> "Загружаю обложку…"
         "metadata" -> "Записываю метаданные и обложку…"
         "verifying" -> "Проверяю аудиофайл…"
-        "publishing" -> "Добавляю трек в Music/Ya Music…"
+        "publishing" -> "Добавляю файлы в Music/Ya Music…"
         else -> "Обрабатываю трек…"
     }
-    if (progress.phase != "downloading" || progress.downloaded <= 0) return phase
+    val item = if (progress.itemTotal > 1 && progress.item > 0) {
+        "Трек ${progress.item} из ${progress.itemTotal}" +
+            progress.itemLabel.takeIf(String::isNotBlank)?.let { " · $it" }.orEmpty() + "\n"
+    } else {
+        ""
+    }
+    if (progress.phase != "downloading" || progress.downloaded <= 0) return item + phase
     val downloaded = formatBytes(progress.downloaded)
     return progress.total
         ?.takeIf { it > 0 }
-        ?.let { "$phase · $downloaded / ${formatBytes(it)}" }
-        ?: "$phase · $downloaded"
+        ?.let { "$item$phase · $downloaded / ${formatBytes(it)}" }
+        ?: "$item$phase · $downloaded"
 }
 
 private fun formatBytes(bytes: Long): String {

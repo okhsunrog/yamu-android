@@ -291,6 +291,22 @@ fn build(sysroot: Option<&str>) -> io::Result<()> {
 
     configure.current_dir(&source_dir);
     configure.arg(format!("--prefix={}", search().to_string_lossy()));
+    if let Ok(root) = env::var("DEP_MP3LAME_ROOT") {
+        let root = PathBuf::from(root);
+        let mut paths = vec![root.join("lib/pkgconfig")];
+        if let Some(existing) = env::var_os("PKG_CONFIG_PATH") {
+            paths.extend(env::split_paths(&existing));
+        }
+        configure.env(
+            "PKG_CONFIG_PATH",
+            env::join_paths(paths).expect("valid pkg-config paths"),
+        );
+        configure.arg(format!(
+            "--extra-cflags=-I{}",
+            root.join("include").display()
+        ));
+        configure.arg(format!("--extra-ldflags=-L{}", root.join("lib").display()));
+    }
 
     let target = env::var("TARGET").unwrap();
     let host = env::var("HOST").unwrap();

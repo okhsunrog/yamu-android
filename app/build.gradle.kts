@@ -58,8 +58,12 @@ val buildRust = tasks.register<Exec>("buildRust") {
         rootProject.fileTree("native/src"),
         rootProject.file("native/Cargo.toml"),
         rootProject.file("native/Cargo.lock"),
+        rootProject.file("../ya-music/Cargo.toml"),
+        rootProject.file("../ya-music/Cargo.lock"),
     )
     inputs.dir(rootProject.file("../ya-music/src"))
+    inputs.dir(rootProject.file("vendor/ffmpeg-sys-next"))
+    inputs.dir(rootProject.file("vendor/mp3lame-sys"))
     outputs.files(
         file("src/main/jniLibs/arm64-v8a/libya_mus_downloader.so"),
         file("src/main/jniLibs/x86_64/libya_mus_downloader.so"),

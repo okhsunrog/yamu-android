@@ -19,18 +19,32 @@ internal data class PublishedTrack(
     val mimeType: String,
 )
 
+internal data class PublishedDownload(
+    val title: String,
+    val location: String,
+    val fileCount: Int,
+    val isCollection: Boolean,
+    val shareTrack: PublishedTrack?,
+)
+
 internal object TrackPublisher {
     private const val ALBUM_DIRECTORY = "Ya Music"
 
-    fun publish(context: Context, sourcePath: String): PublishedTrack {
+    fun publish(
+        context: Context,
+        sourcePath: String,
+        relativeDirectory: String? = null,
+    ): PublishedTrack {
         val source = File(sourcePath)
         require(source.isFile) { "Скачанный файл не найден: $sourcePath" }
         val mimeType = mimeTypeFor(source.extension)
+        val targetDirectory = listOfNotNull(ALBUM_DIRECTORY, relativeDirectory)
+            .joinToString("/")
 
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             val musicDirectory = requireNotNull(
                 context.getExternalFilesDir(Environment.DIRECTORY_MUSIC),
-            ).resolve(ALBUM_DIRECTORY)
+            ).resolve(targetDirectory)
             check(musicDirectory.mkdirs() || musicDirectory.isDirectory) {
                 "Android не смог создать папку для музыки"
             }
@@ -45,7 +59,7 @@ internal object TrackPublisher {
             return PublishedTrack(
                 uri,
                 destination.name,
-                "папке приложения Music/$ALBUM_DIRECTORY",
+                "папке приложения Music/$targetDirectory",
                 mimeType,
             )
         }
@@ -57,7 +71,7 @@ internal object TrackPublisher {
             put(MediaStore.Audio.Media.MIME_TYPE, mimeType)
             put(
                 MediaStore.Audio.Media.RELATIVE_PATH,
-                "${Environment.DIRECTORY_MUSIC}/$ALBUM_DIRECTORY",
+                "${Environment.DIRECTORY_MUSIC}/$targetDirectory",
             )
             put(MediaStore.Audio.Media.IS_PENDING, 1)
         }
@@ -82,7 +96,7 @@ internal object TrackPublisher {
         return PublishedTrack(
             uri = uri,
             displayName = displayName(context, uri, source.name),
-            location = "Music/$ALBUM_DIRECTORY",
+            location = "Music/$targetDirectory",
             mimeType = mimeType,
         )
     }

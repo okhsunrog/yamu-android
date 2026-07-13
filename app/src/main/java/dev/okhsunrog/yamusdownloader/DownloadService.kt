@@ -27,12 +27,13 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 internal object DownloadCoordinator {
     private val mutableStatus = MutableStateFlow<DownloadStatus>(DownloadStatus.Idle)
     val status = mutableStatus.asStateFlow()
 
-    fun start(context: Context, trackLink: String) {
+    fun start(context: Context, resourceLink: String) {
         if (mutableStatus.value.isBusy) return
         if (
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -43,7 +44,7 @@ internal object DownloadCoordinator {
         }
         mutableStatus.value = DownloadStatus.Downloading(NativeDownloadProgress())
         val intent = Intent(context, DownloadService::class.java)
-            .putExtra(DownloadService.EXTRA_TRACK_LINK, trackLink)
+            .putExtra(DownloadService.EXTRA_RESOURCE_LINK, resourceLink)
         try {
             ContextCompat.startForegroundService(context, intent)
         } catch (error: Throwable) {
@@ -92,9 +93,9 @@ class DownloadService : Service() {
         }
         if (downloadJob?.isActive == true) return START_NOT_STICKY
 
-        val trackLink = intent?.getStringExtra(EXTRA_TRACK_LINK)
+        val resourceLink = intent?.getStringExtra(EXTRA_RESOURCE_LINK)
         val token = TokenStore(this).load()
-        if (token.isBlank() || trackLink.isNullOrBlank()) {
+        if (token.isBlank() || resourceLink.isNullOrBlank()) {
             DownloadCoordinator.update(DownloadStatus.Failure("Не хватает данных для скачивания"))
             stopSelf(startId)
             return START_NOT_STICKY
@@ -102,7 +103,7 @@ class DownloadService : Service() {
 
         startAsForeground()
         downloadJob = scope.launch {
-            runDownload(token, trackLink)
+            runDownload(token, resourceLink)
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf(startId)
         }
@@ -117,14 +118,15 @@ class DownloadService : Service() {
         super.onDestroy()
     }
 
-    private suspend fun runDownload(token: String, trackLink: String) {
+    private suspend fun runDownload(token: String, resourceLink: String) {
         var lastNotification = 0L
         try {
             val nativeDownload = scope.async(Dispatchers.IO) {
-                NativeBridge.downloadTrack(
+                NativeBridge.downloadResource(
                     token,
-                    trackLink,
+                    resourceLink,
                     cacheDir.resolve("downloads").absolutePath,
+                    SettingsStore(this@DownloadService).preferMp3,
                 )
             }
             while (nativeDownload.isActive) {
@@ -139,16 +141,16 @@ class DownloadService : Service() {
                 }
                 delay(100)
             }
-            val path = nativeDownload.await()
+            val result = JSONObject(nativeDownload.await())
             val publishing = DownloadStatus.Downloading(
                 NativeDownloadProgress(phase = "publishing", cancellable = false),
             )
             DownloadCoordinator.update(publishing)
             updateNotification(publishing)
-            val track = withContext(Dispatchers.IO) {
-                TrackPublisher.publish(this@DownloadService, path)
+            val download = withContext(Dispatchers.IO) {
+                publishResult(result)
             }
-            DownloadCoordinator.update(DownloadStatus.Success(track))
+            DownloadCoordinator.update(DownloadStatus.Success(download))
         } catch (error: Throwable) {
             val cancelled = DownloadCoordinator.status.value is DownloadStatus.Cancelling ||
                 error.message?.contains("cancelled", ignoreCase = true) == true
@@ -200,7 +202,7 @@ class DownloadService : Service() {
         )
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setContentTitle("Скачиваю трек")
+            .setContentTitle("Скачиваю музыку")
             .setContentText(notificationText(status))
             .setContentIntent(contentIntent)
             .setOnlyAlertOnce(true)
@@ -223,7 +225,7 @@ class DownloadService : Service() {
     private fun notificationText(status: DownloadStatus): String = when (status) {
         is DownloadStatus.Downloading -> progressDescription(status.progress)
         DownloadStatus.Cancelling -> "Останавливаю скачивание…"
-        else -> "Обрабатываю трек…"
+        else -> "Обрабатываю музыку…"
     }
 
     private fun createNotificationChannel() {
@@ -235,8 +237,30 @@ class DownloadService : Service() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
+    private fun publishResult(result: JSONObject): PublishedDownload {
+        val files = result.getJSONArray("files")
+        val published = ArrayList<PublishedTrack>(files.length())
+        for (index in 0 until files.length()) {
+            val file = files.getJSONObject(index)
+            val directory = file.optString("directory").takeIf { it.isNotBlank() }
+            published += TrackPublisher.publish(
+                this,
+                file.getString("path"),
+                directory,
+            )
+        }
+        val collectionDirectory = result.optString("directory").takeIf { it.isNotBlank() }
+        return PublishedDownload(
+            title = result.optString("title", "Музыка"),
+            location = listOfNotNull("Music/Ya Music", collectionDirectory).joinToString("/"),
+            fileCount = published.size,
+            isCollection = result.optString("kind") != "track",
+            shareTrack = published.singleOrNull().takeIf { result.optString("kind") == "track" },
+        )
+    }
+
     companion object {
-        internal const val EXTRA_TRACK_LINK = "track_link"
+        internal const val EXTRA_RESOURCE_LINK = "resource_link"
         internal const val ACTION_CANCEL = "dev.okhsunrog.yamusdownloader.CANCEL_DOWNLOAD"
         private const val CHANNEL_ID = "track-downloads"
         private const val NOTIFICATION_ID = 1001

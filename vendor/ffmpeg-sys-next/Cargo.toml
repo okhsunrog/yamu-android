@@ -17,6 +17,7 @@ doctest = false
 
 [dependencies]
 libc = "0.2"
+mp3lame-sys = { path = "../mp3lame-sys", version = "0.1.11", optional = true }
 
 [build-dependencies]
 num_cpus   = "1.17"
@@ -71,7 +72,7 @@ build-lib-fdk-aac          = ["build"]
 build-lib-gsm              = ["build"]
 build-lib-ilbc             = ["build"]
 build-lib-kvazaar          = ["build"]
-build-lib-mp3lame          = ["build"]
+build-lib-mp3lame          = ["build", "dep:mp3lame-sys"]
 build-lib-opencore-amrnb   = ["build"]
 build-lib-opencore-amrwb   = ["build"]
 build-lib-openh264         = ["build"]

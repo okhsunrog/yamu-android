@@ -51,7 +51,7 @@ class MainActivity : ComponentActivity() {
                 intent.getStringExtra(Intent.EXTRA_TEXT)
             else -> null
         }
-        extractTrackLink(candidate)?.let {
+        extractResourceLink(candidate)?.let {
             getSystemService(ShortcutManager::class.java)
                 ?.reportShortcutUsed("download-shared-track")
             intentSequence += 1
@@ -77,10 +77,11 @@ class MainActivity : ComponentActivity() {
         private const val SHARE_CATEGORY =
             "dev.okhsunrog.yamusdownloader.category.DOWNLOAD"
         private val YANDEX_MUSIC_LINK = Pattern.compile(
-            "https://music\\.yandex\\.ru/album/\\d+/track/\\d+(?:\\?[^\\s]*)?",
+            "https://music\\.yandex\\.ru/(?:album/\\d+(?:/track/\\d+)?|" +
+                "users/[^/\\s]+/playlists/\\d+)(?:\\?[^\\s]*)?",
         )
 
-        fun extractTrackLink(text: String?): String? {
+        fun extractResourceLink(text: String?): String? {
             val matcher = YANDEX_MUSIC_LINK.matcher(text?.trim().orEmpty())
             if (!matcher.find()) return null
             return matcher.group().replace(Regex("[),.;!?]+$"), "")

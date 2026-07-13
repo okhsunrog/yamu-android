@@ -48,7 +48,11 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data
                     android:host="music.yandex.ru"
-                    android:pathPattern="/album/.*/track/.*"
+                    android:pathPattern="/album/.*"
+                    android:scheme="https" />
+                <data
+                    android:host="music.yandex.ru"
+                    android:pathPattern="/users/.*/playlists/.*"
                     android:scheme="https" />
             </intent-filter>
             <meta-data
