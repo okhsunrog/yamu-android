@@ -139,25 +139,44 @@ internal fun DownloaderApp(
     tokenStore: TokenStore,
     incomingLink: IncomingLink?,
 ) {
-    var accessToken by remember { mutableStateOf(tokenStore.load()) }
+    var accessToken by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(tokenStore) {
+        accessToken = withContext(Dispatchers.IO) { tokenStore.load() }
+    }
+
+    val loadedToken = accessToken
+    if (loadedToken == null) {
+        AppScaffold {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center,
+            ) {
+                CircularProgressIndicator()
+            }
+        }
+        return
+    }
 
     AnimatedContent(
-        targetState = accessToken.isNotBlank(),
+        targetState = loadedToken.isNotBlank(),
         label = "authentication-gate",
     ) { authenticated ->
         if (authenticated) {
             DownloaderScreen(
                 incomingLink = incomingLink,
                 onLogout = {
-                    tokenStore.clear()
-                    accessToken = ""
+                    scope.launch {
+                        withContext(Dispatchers.IO) { tokenStore.clear() }
+                        accessToken = ""
+                    }
                 },
             )
         } else {
             AuthScreen(
                 pendingLink = incomingLink?.url,
                 onAuthorized = { token ->
-                    tokenStore.save(token)
+                    withContext(Dispatchers.IO) { tokenStore.save(token) }
                     accessToken = token
                 },
             )
@@ -168,7 +187,7 @@ internal fun DownloaderApp(
 @Composable
 private fun AuthScreen(
     pendingLink: String?,
-    onAuthorized: (String) -> Unit,
+    onAuthorized: suspend (String) -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -204,21 +223,32 @@ private fun AuthScreen(
     LaunchedEffect(waiting?.session?.deviceCode) {
         val session = waiting?.session ?: return@LaunchedEffect
         var consecutiveErrors = 0
+        var pollInterval = session.interval
         while (isActive) {
             val elapsed = SystemClock.elapsedRealtime() - session.startedAt
-            if (elapsed >= session.expiresIn * 1_000) {
+            val remaining = session.expiresIn * 1_000 - elapsed
+            if (remaining <= 0) {
                 status = AuthStatus.Failure("Код истёк. Начните вход ещё раз.")
                 return@LaunchedEffect
             }
-            delay(session.interval * 1_000)
+            delay(minOf(pollInterval * 1_000, remaining))
+            if (SystemClock.elapsedRealtime() - session.startedAt >= session.expiresIn * 1_000) {
+                status = AuthStatus.Failure("Код истёк. Начните вход ещё раз.")
+                return@LaunchedEffect
+            }
             try {
-                val token = withContext(Dispatchers.IO) {
-                    NativeBridge.pollDeviceToken(session.deviceCode)
+                val response = withContext(Dispatchers.IO) {
+                    JSONObject(NativeBridge.pollDeviceToken(session.deviceCode))
                 }
                 consecutiveErrors = 0
-                if (token.isNotBlank()) {
-                    onAuthorized(token)
-                    return@LaunchedEffect
+                when (response.getString("status")) {
+                    "pending" -> Unit
+                    "slow_down" -> pollInterval += 5
+                    "authorized" -> {
+                        onAuthorized(response.getString("accessToken"))
+                        return@LaunchedEffect
+                    }
+                    else -> error("Неизвестный ответ авторизации")
                 }
             } catch (error: Throwable) {
                 consecutiveErrors += 1

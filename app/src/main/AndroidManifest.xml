@@ -46,14 +46,10 @@
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data
-                    android:host="music.yandex.ru"
-                    android:pathPattern="/album/.*"
-                    android:scheme="https" />
-                <data
-                    android:host="music.yandex.ru"
-                    android:pathPattern="/users/.*/playlists/.*"
-                    android:scheme="https" />
+                <data android:scheme="https" />
+                <data android:host="music.yandex.ru" />
+                <data android:pathPattern="/album/.*" />
+                <data android:pathPattern="/users/.*/playlists/.*" />
             </intent-filter>
             <meta-data
                 android:name="android.app.shortcuts"

@@ -1,6 +1,7 @@
 use std::{
     path::{Path, PathBuf},
     sync::{LazyLock, Mutex, OnceLock},
+    time::Duration,
 };
 
 use anyhow::{Context as _, Result, bail};
@@ -11,7 +12,7 @@ use jni::{
 };
 use yandex_music_api::{
     Client,
-    auth::DeviceAuth,
+    auth::{DeviceAuth, DeviceTokenPoll},
     downloader::{CancellationToken, DownloadEvent, DownloadPhase, DownloadRequest, Downloader},
     media::{MediaBackend as _, TrackMetadata, ffmpeg::Ffmpeg, verify_audio_file, write_metadata},
     models::{Album, AudioCodec, DownloadOptions, Id, Track},
@@ -33,7 +34,9 @@ static DOWNLOAD_PROGRESS: LazyLock<Mutex<NativeProgress>> =
 static ACTIVE_DOWNLOAD: LazyLock<Mutex<Option<CancellationToken>>> =
     LazyLock::new(|| Mutex::new(None));
 static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-static ARTWORK_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
+static ARTWORK_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+const MAX_ARTWORK_BYTES: usize = 10 * 1024 * 1024;
 
 struct ActiveDownloadGuard;
 
@@ -81,7 +84,17 @@ pub extern "system" fn Java_dev_okhsunrog_yamusdownloader_NativeBridge_initializ
     context: JObject<'caller>,
 ) {
     unowned_env
-        .with_env(|env| rustls_platform_verifier::android::init_with_env(env, context))
+        .with_env(|env| -> jni::errors::Result<()> {
+            #[cfg(target_os = "android")]
+            {
+                rustls_platform_verifier::android::init_with_env(env, context)
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                let _ = (env, context);
+                Ok(())
+            }
+        })
         .resolve::<ThrowRuntimeExAndDefault>()
 }
 
@@ -175,11 +188,17 @@ pub extern "system" fn Java_dev_okhsunrog_yamusdownloader_NativeBridge_pollDevic
         .with_env(
             |env| -> std::result::Result<JString<'caller>, NativeError> {
                 let device_code = device_code.try_to_string(env)?;
-                let token =
-                    runtime()?.block_on(DeviceAuth::new()?.poll_device_token(&device_code))?;
-                let access_token =
-                    token.map_or_else(String::new, |token| token.into_access_token());
-                Ok(JString::from_str(env, access_token)?)
+                let event = runtime()?
+                    .block_on(DeviceAuth::new()?.poll_device_token_event(&device_code))?;
+                let response = match event {
+                    DeviceTokenPoll::Pending => serde_json::json!({ "status": "pending" }),
+                    DeviceTokenPoll::SlowDown => serde_json::json!({ "status": "slow_down" }),
+                    DeviceTokenPoll::Authorized(token) => serde_json::json!({
+                        "status": "authorized",
+                        "accessToken": token.into_access_token(),
+                    }),
+                };
+                Ok(JString::from_str(env, response.to_string())?)
             },
         )
         .resolve::<ThrowRuntimeExAndDefault>()
@@ -298,7 +317,6 @@ async fn download_resource(
             let album = client.album_with_tracks(album_ref.album_id()).await?;
             let directory_name = album_directory_name(&album);
             let directory = output_directory.join(&directory_name);
-            let _ = tokio::fs::remove_dir_all(&directory).await;
             tokio::fs::create_dir_all(&directory).await?;
             let title = album.title.as_deref().unwrap_or("Альбом").to_owned();
             let jobs = album_jobs(&album, &directory, &directory_name)?;
@@ -311,7 +329,6 @@ async fn download_resource(
             let title = playlist.title.as_deref().unwrap_or("Плейлист").to_owned();
             let directory_name = safe_file_component(&title);
             let directory = output_directory.join(&directory_name);
-            let _ = tokio::fs::remove_dir_all(&directory).await;
             tokio::fs::create_dir_all(&directory).await?;
             let total = playlist.tracks.len();
             let width = total.to_string().len().max(2);
@@ -421,7 +438,7 @@ async fn download_job(
         extension = "mp3";
     }
     set_native_phase("artwork");
-    let artwork = fetch_artwork(&job.track).await;
+    let artwork = fetch_artwork(&job.track, cancellation).await;
     if cancellation.is_cancelled() {
         let _ = tokio::fs::remove_file(&destination).await;
         bail!("download was cancelled");
@@ -574,24 +591,57 @@ fn album_jobs(album: &Album, directory: &Path, target_root: &str) -> Result<Vec<
     Ok(jobs)
 }
 
-async fn fetch_artwork(track: &yandex_music_api::models::Track) -> Option<Vec<u8>> {
+async fn fetch_artwork(
+    track: &yandex_music_api::models::Track,
+    cancellation: &CancellationToken,
+) -> Option<Vec<u8>> {
     let url = track.cover_url("600x600").or_else(|| {
         track
             .albums
             .first()
             .and_then(|album| album.cover_url("600x600"))
     })?;
+    let client = artwork_client().ok()?;
+    let mut response = tokio::select! {
+        () = cancellation.cancelled() => return None,
+        response = client.get(url).send() => response.ok()?,
+    }
+    .error_for_status()
+    .ok()?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_ARTWORK_BYTES as u64)
+    {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    loop {
+        let chunk = tokio::select! {
+            () = cancellation.cancelled() => return None,
+            chunk = response.chunk() => chunk.ok()?,
+        };
+        let Some(chunk) = chunk else {
+            return Some(bytes);
+        };
+        if bytes.len().saturating_add(chunk.len()) > MAX_ARTWORK_BYTES {
+            return None;
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+}
+
+fn artwork_client() -> Result<&'static reqwest::Client> {
+    if let Some(client) = ARTWORK_CLIENT.get() {
+        return Ok(client);
+    }
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .read_timeout(Duration::from_secs(15))
+        .build()?;
+    let _ = ARTWORK_CLIENT.set(client);
     ARTWORK_CLIENT
-        .get(url)
-        .send()
-        .await
-        .ok()?
-        .error_for_status()
-        .ok()?
-        .bytes()
-        .await
-        .ok()
-        .map(|bytes| bytes.to_vec())
+        .get()
+        .context("artwork HTTP client was not initialized")
 }
 
 fn normalized_extension(codec: &AudioCodec) -> Result<&'static str> {

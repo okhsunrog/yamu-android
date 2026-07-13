@@ -16,11 +16,13 @@ import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -89,23 +91,33 @@ class DownloadService : Service() {
             DownloadCoordinator.update(DownloadStatus.Cancelling)
             NativeBridge.cancelDownload()
             updateNotification(DownloadStatus.Cancelling)
-            return START_NOT_STICKY
-        }
-        if (downloadJob?.isActive == true) return START_NOT_STICKY
-
-        val resourceLink = intent?.getStringExtra(EXTRA_RESOURCE_LINK)
-        val token = TokenStore(this).load()
-        if (token.isBlank() || resourceLink.isNullOrBlank()) {
-            DownloadCoordinator.update(DownloadStatus.Failure("Не хватает данных для скачивания"))
-            stopSelf(startId)
+            if (downloadJob?.isActive != true) stopSelf()
             return START_NOT_STICKY
         }
 
         startAsForeground()
+        if (downloadJob?.isActive == true) return START_NOT_STICKY
+
+        val resourceLink = intent?.getStringExtra(EXTRA_RESOURCE_LINK)
         downloadJob = scope.launch {
-            runDownload(token, resourceLink)
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf(startId)
+            try {
+                runDownload(resourceLink)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                val cancelled = DownloadCoordinator.status.value is DownloadStatus.Cancelling ||
+                    error.message?.contains("cancelled", ignoreCase = true) == true
+                DownloadCoordinator.update(
+                    if (cancelled) {
+                        DownloadStatus.Cancelled
+                    } else {
+                        DownloadStatus.Failure(error.message ?: "Неизвестная ошибка")
+                    },
+                )
+            } finally {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
         }
         return START_NOT_STICKY
     }
@@ -118,10 +130,24 @@ class DownloadService : Service() {
         super.onDestroy()
     }
 
-    private suspend fun runDownload(token: String, resourceLink: String) {
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        DownloadCoordinator.update(
+            DownloadStatus.Failure("Android остановил слишком долгое скачивание"),
+        )
+        NativeBridge.cancelDownload()
+        downloadJob?.cancel(CancellationException("foreground service timed out"))
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    private suspend fun runDownload(resourceLink: String?) {
+        val token = withContext(Dispatchers.IO) { TokenStore(this@DownloadService).load() }
+        require(token.isNotBlank() && !resourceLink.isNullOrBlank()) {
+            "Не хватает данных для скачивания"
+        }
         var lastNotification = 0L
-        try {
-            val nativeDownload = scope.async(Dispatchers.IO) {
+        coroutineScope {
+            val nativeDownload = async(Dispatchers.IO) {
                 NativeBridge.downloadResource(
                     token,
                     resourceLink,
@@ -129,38 +155,35 @@ class DownloadService : Service() {
                     SettingsStore(this@DownloadService).preferMp3,
                 )
             }
-            while (nativeDownload.isActive) {
-                if (DownloadCoordinator.status.value !is DownloadStatus.Cancelling) {
-                    val status = DownloadStatus.Downloading(readNativeProgress())
-                    DownloadCoordinator.update(status)
-                    val now = SystemClock.elapsedRealtime()
-                    if (now - lastNotification >= NOTIFICATION_INTERVAL_MS) {
-                        updateNotification(status)
-                        lastNotification = now
+            try {
+                while (nativeDownload.isActive) {
+                    if (DownloadCoordinator.status.value !is DownloadStatus.Cancelling) {
+                        val status = DownloadStatus.Downloading(readNativeProgress())
+                        DownloadCoordinator.update(status)
+                        val now = SystemClock.elapsedRealtime()
+                        if (now - lastNotification >= NOTIFICATION_INTERVAL_MS) {
+                            updateNotification(status)
+                            lastNotification = now
+                        }
                     }
+                    delay(PROGRESS_POLL_INTERVAL_MS)
                 }
-                delay(100)
+                val result = JSONObject(nativeDownload.await())
+                val publishing = DownloadStatus.Downloading(
+                    NativeDownloadProgress(phase = "publishing", cancellable = false),
+                )
+                DownloadCoordinator.update(publishing)
+                updateNotification(publishing)
+                val download = withContext(Dispatchers.IO) {
+                    publishResult(result)
+                }
+                DownloadCoordinator.update(DownloadStatus.Success(download))
+            } finally {
+                if (!nativeDownload.isCompleted) {
+                    NativeBridge.cancelDownload()
+                    nativeDownload.cancel()
+                }
             }
-            val result = JSONObject(nativeDownload.await())
-            val publishing = DownloadStatus.Downloading(
-                NativeDownloadProgress(phase = "publishing", cancellable = false),
-            )
-            DownloadCoordinator.update(publishing)
-            updateNotification(publishing)
-            val download = withContext(Dispatchers.IO) {
-                publishResult(result)
-            }
-            DownloadCoordinator.update(DownloadStatus.Success(download))
-        } catch (error: Throwable) {
-            val cancelled = DownloadCoordinator.status.value is DownloadStatus.Cancelling ||
-                error.message?.contains("cancelled", ignoreCase = true) == true
-            DownloadCoordinator.update(
-                if (cancelled) {
-                    DownloadStatus.Cancelled
-                } else {
-                    DownloadStatus.Failure(error.message ?: "Неизвестная ошибка")
-                },
-            )
         }
     }
 
@@ -184,7 +207,7 @@ class DownloadService : Service() {
             PackageManager.PERMISSION_GRANTED
         ) return
         getSystemService(NotificationManager::class.java)
-            .notify(NOTIFICATION_ID, notification(status))
+            ?.notify(NOTIFICATION_ID, notification(status))
     }
 
     private fun notification(status: DownloadStatus): android.app.Notification {
@@ -234,7 +257,7 @@ class DownloadService : Service() {
             "Скачивание музыки",
             NotificationManager.IMPORTANCE_LOW,
         )
-        getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
     }
 
     private fun publishResult(result: JSONObject): PublishedDownload {
@@ -265,5 +288,6 @@ class DownloadService : Service() {
         private const val CHANNEL_ID = "track-downloads"
         private const val NOTIFICATION_ID = 1001
         private const val NOTIFICATION_INTERVAL_MS = 500L
+        private const val PROGRESS_POLL_INTERVAL_MS = 250L
     }
 }
