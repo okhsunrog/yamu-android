@@ -199,7 +199,7 @@ jobs:
           echo "apk=$output" >> "$GITHUB_OUTPUT"
           echo "ffmpeg_config=$ffmpeg_config" >> "$GITHUB_OUTPUT"
 
-      - name: Verify APK architecture and signature
+      - name: Verify APK contents and signature
         env:
           ABI: ${{ matrix.abi }}
           APK: ${{ steps.build.outputs.apk }}
@@ -214,6 +214,26 @@ jobs:
           apksigner="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f \
             -printf '%h\n' | sort -V | tail -1)/apksigner"
           "$apksigner" verify --verbose --print-certs "$APK"
+
+          apkanalyzer="$(find "$ANDROID_HOME/cmdline-tools" -path '*/bin/apkanalyzer' \
+            -type f -print | sort -V | tail -1)"
+          if [ -z "$apkanalyzer" ]; then
+            echo "Android SDK apkanalyzer was not found" >&2
+            exit 1
+          fi
+          dex_packages="$RUNNER_TEMP/dex-packages-$ABI.txt"
+          "$apkanalyzer" dex packages --defined-only "$APK" > "$dex_packages"
+          for class_name in \
+            org.rustls.platformverifier.CertificateVerifier \
+            org.rustls.platformverifier.StatusCode \
+            org.rustls.platformverifier.VerificationResult; do
+            if ! awk -v expected="$class_name" \
+              '$1 == "C" && $NF == expected { found = 1 } END { exit(found ? 0 : 1) }' \
+              "$dex_packages"; then
+              echo "R8 removed or renamed required verifier class: $class_name" >&2
+              exit 1
+            fi
+          done
 
       - name: Lint Android app
         if: matrix.abi == 'arm64-v8a'

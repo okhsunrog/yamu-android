@@ -64,7 +64,7 @@ android {
         applicationId = "dev.okhsunrog.yamu"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
+        versionCode = 2
         versionName = yamuVersionName
         buildConfigField("String", "FFMPEG_REVISION", "\"$ffmpegRevision\"")
     }
