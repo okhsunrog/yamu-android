@@ -1,0 +1,223 @@
+name: Android
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+jobs:
+  build:
+    name: APK (${{ matrix.abi }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            rust-target: aarch64-linux-android
+          - abi: armeabi-v7a
+            rust-target: armv7-linux-androideabi
+          - abi: x86_64
+            rust-target: x86_64-linux-android
+          - abi: x86
+            rust-target: i686-linux-android
+    env:
+      CARGO_TERM_COLOR: always
+      ANDROID_NDK_VERSION: 29.0.14033849
+    defaults:
+      run:
+        working-directory: yamu-android
+
+    steps:
+      - name: Check out Yamu Downloader
+        uses: actions/checkout@v7
+        with:
+          path: yamu-android
+          fetch-depth: 0
+
+      - name: Check out yamu crate
+        uses: actions/checkout@v7
+        with:
+          repository: okhsunrog/yamu
+          ref: c4f0ffdbe93047154ae6fc500d2474c98a8e6531
+          path: yamu
+          persist-credentials: false
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android platform and NDK
+        run: |
+          set +o pipefail
+          yes | sdkmanager --licenses >/dev/null
+          set -o pipefail
+          sdkmanager \
+            "platforms;android-37.0" \
+            "build-tools;36.1.0-rc1" \
+            "ndk;$ANDROID_NDK_VERSION"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION" >> "$GITHUB_ENV"
+
+      - name: Install native build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            autoconf automake clang cmake libtool make nasm pkg-config unzip
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          targets: ${{ matrix.rust-target }}
+
+      - name: Install cargo-ndk
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk@4.1.2
+
+      - name: Cache Cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            yamu-android/native/target
+          key: cargo-android-${{ runner.os }}-${{ matrix.abi }}-${{ hashFiles('yamu-android/native/Cargo.lock', 'yamu/Cargo.lock') }}
+          restore-keys: cargo-android-${{ runner.os }}-${{ matrix.abi }}-
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+
+      - name: Set up signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          signing_dir="$RUNNER_TEMP/yamu-signing"
+          keystore_path="$signing_dir/release.jks"
+          mkdir -p "$signing_dir"
+
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$keystore_path"
+          elif [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "Release signing secrets are required for tag builds" >&2
+            exit 1
+          else
+            echo "Signing secrets are unavailable; generating an ephemeral CI key"
+            KEYSTORE_PASSWORD=ephemeral
+            KEY_ALIAS=ephemeral
+            keytool -genkeypair \
+              -keystore "$keystore_path" \
+              -storepass "$KEYSTORE_PASSWORD" \
+              -keypass "$KEYSTORE_PASSWORD" \
+              -alias "$KEY_ALIAS" \
+              -keyalg RSA -keysize 4096 -validity 30 \
+              -dname "CN=yamu-ci, O=Yamu"
+          fi
+          chmod 600 "$keystore_path"
+          {
+            printf 'password=%s\n' "$KEYSTORE_PASSWORD"
+            printf 'keyAlias=%s\n' "$KEY_ALIAS"
+            printf 'storeFile=%s\n' "$keystore_path"
+          } > keystore.properties
+
+      - name: Build signed APK
+        id: build
+        env:
+          ABI: ${{ matrix.abi }}
+        run: |
+          label="${GITHUB_SHA::7}"
+          gradle_args=(":app:assembleRelease" "-Pyamu.abi=$ABI")
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            label="${GITHUB_REF_NAME#v}"
+            gradle_args+=("-Pyamu.versionName=$label")
+          fi
+
+          ./gradlew "${gradle_args[@]}"
+
+          apk="$(find app/build/outputs/apk/release -maxdepth 1 -type f \
+            -name "*-$ABI-release.apk" -print -quit)"
+          if [ -z "$apk" ]; then
+            echo "No release APK found for $ABI" >&2
+            find app/build/outputs/apk -type f -name '*.apk' -print >&2
+            exit 1
+          fi
+          output="$GITHUB_WORKSPACE/yamu-downloader-$label-$ABI.apk"
+          cp "$apk" "$output"
+          echo "apk=$output" >> "$GITHUB_OUTPUT"
+
+      - name: Verify APK architecture and signature
+        env:
+          ABI: ${{ matrix.abi }}
+          APK: ${{ steps.build.outputs.apk }}
+        run: |
+          native_entries="$(zipinfo -1 "$APK" | grep '^lib/.*/libyamu_native\.so$')"
+          expected="lib/$ABI/libyamu_native.so"
+          if [ "$native_entries" != "$expected" ]; then
+            echo "Expected only $expected, found:" >&2
+            printf '%s\n' "$native_entries" >&2
+            exit 1
+          fi
+          apksigner="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f \
+            -printf '%h\n' | sort -V | tail -1)/apksigner"
+          "$apksigner" verify --verbose --print-certs "$APK"
+
+      - name: Lint Android app
+        if: matrix.abi == 'arm64-v8a'
+        run: ./gradlew :app:lintRelease -Pyamu.abi=arm64-v8a
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: yamu-downloader-${{ matrix.abi }}
+          path: ${{ steps.build.outputs.apk }}
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download APKs
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          pattern: yamu-downloader-*
+          merge-multiple: true
+
+      - name: Create checksums
+        run: sha256sum dist/*.apk > dist/SHA256SUMS
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Yamu Downloader ${{ github.ref_name }}
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.apk
+            dist/SHA256SUMS

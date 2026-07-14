@@ -59,13 +59,21 @@ LAME 3.100.
 
 Requirements:
 
-- Rust 1.97 with `aarch64-linux-android` and `x86_64-linux-android`;
+- Rust 1.97 with `aarch64-linux-android`, `armv7-linux-androideabi`,
+  `x86_64-linux-android`, and `i686-linux-android`;
 - Android SDK 37 and NDK 29.0.14033849;
 - `cargo-ndk`;
-- sibling checkout `../ya-music`.
+- sibling checkout `../yamu`.
 
 ```console
 ./gradlew assembleDebug
+```
+
+The default build emits separate APKs for `arm64-v8a`, `armeabi-v7a`,
+`x86_64`, and `x86`. To build only one architecture, pass its Android ABI:
+
+```console
+./gradlew assembleDebug -Pyamu.abi=arm64-v8a
 ```
 
 Local debug and release builds use `keystore.properties` when it is present.
@@ -75,7 +83,9 @@ follow the standard Android Gradle signing-property layout.
 The first native build compiles LAME, clones and compiles FFmpeg, and therefore
 takes longer. Gradle invokes `cargo-ndk` directly and keeps generated JNI
 libraries under `app/build/rustNative`; `gradle clean` removes them.
-The APK is written under `app/build/outputs/apk/debug/`.
+APKs are written under `app/build/outputs/apk/debug/`. GitHub Actions builds
+the four architectures in parallel and uploads each signed APK separately.
+Tags matching `v*` publish all four APKs and `SHA256SUMS` to a GitHub release.
 
 The access token is encrypted with an app-specific AES-GCM key held by Android
 Keystore; preferences contain only the IV and ciphertext, and Android backup is

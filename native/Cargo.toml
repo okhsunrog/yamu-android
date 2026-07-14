@@ -17,7 +17,7 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "s
 rustls-platform-verifier = "0.7"
 serde_json = "1"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread"] }
-yamu = { path = "../../ya-music", default-features = false, features = ["oauth", "downloader", "media-ffmpeg"] }
+yamu = { path = "../../yamu", default-features = false, features = ["oauth", "downloader", "media-ffmpeg"] }
 
 [patch.crates-io]
 ffmpeg-sys-next = { path = "../vendor/ffmpeg-sys-next" }

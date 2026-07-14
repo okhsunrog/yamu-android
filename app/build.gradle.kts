@@ -19,7 +19,15 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-val rustJniLibsDir = layout.buildDirectory.dir("rustNative/jniLibs")
+val supportedAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+val requestedAbi = providers.gradleProperty("yamu.abi").orNull
+require(requestedAbi == null || requestedAbi in supportedAbis) {
+    "Unsupported yamu.abi=$requestedAbi; expected one of ${supportedAbis.joinToString()}"
+}
+val selectedAbis = requestedAbi?.let(::listOf) ?: supportedAbis
+val yamuVersionName = providers.gradleProperty("yamu.versionName").getOrElse("0.1.0")
+val rustJniLibsDir =
+    layout.buildDirectory.dir("rustNative/${requestedAbi ?: "all"}/jniLibs")
 val rustNdkVersion = "29.0.14033849"
 val rustSdkDir =
     run {
@@ -40,7 +48,7 @@ val rustNdkDir =
         ?.absolutePath
         ?: rustSdkDir.resolve("ndk/$rustNdkVersion").absolutePath
 val nativeCrateDir = rootProject.file("native")
-val yamuCrateDir = rootProject.file("../ya-music")
+val yamuCrateDir = rootProject.file("../yamu")
 
 android {
     namespace = "dev.okhsunrog.yamu"
@@ -52,10 +60,15 @@ android {
         minSdk = 26
         targetSdk = 37
         versionCode = 1
-        versionName = "0.1.0"
+        versionName = yamuVersionName
+    }
 
-        ndk {
-            abiFilters += listOf("arm64-v8a", "x86_64")
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include(*selectedAbis.toTypedArray())
+            isUniversalApk = false
         }
     }
 
@@ -97,6 +110,10 @@ android {
     sourceSets["main"].jniLibs.directories.add(rustJniLibsDir.get().asFile.absolutePath)
 }
 
+base {
+    archivesName = "yamu-downloader-$yamuVersionName"
+}
+
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2026.06.01")
     implementation(composeBom)
@@ -127,14 +144,24 @@ val buildRust = tasks.register<Exec>("buildRust") {
         .withPathSensitivity(PathSensitivity.RELATIVE)
     inputs.dir(rootProject.file("vendor/mp3lame-sys"))
         .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.property("abis", selectedAbis)
     outputs.dir(rustJniLibsDir)
     commandLine(
-        "cargo", "ndk",
-        "-t", "arm64-v8a",
-        "-t", "x86_64",
-        "-P", "26",
-        "-o", rustJniLibsDir.get().asFile.absolutePath,
-        "build", "--release", "--locked",
+        buildList {
+            add("cargo")
+            add("ndk")
+            selectedAbis.forEach { abi ->
+                add("-t")
+                add(abi)
+            }
+            addAll(
+                listOf(
+                    "-P", "26",
+                    "-o", rustJniLibsDir.get().asFile.absolutePath,
+                    "build", "--release", "--locked",
+                ),
+            )
+        },
     )
 }
 
