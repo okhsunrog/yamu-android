@@ -1,6 +1,6 @@
-# ya-mus-downloader
+# Yamu Downloader
 
-Android client prototype for `yandex-music-api`. On first launch the app signs
+Android client for the `yamu` Rust library. On first launch the app signs
 the user in with Yandex OAuth Device Flow: authorization happens on Yandex's
 official browser page and the access token is saved locally. The downloader UI
 accepts links to tracks, albums, and playlists and saves the best available
@@ -68,8 +68,13 @@ Requirements:
 ./gradlew assembleDebug
 ```
 
+Local debug and release builds use `keystore.properties` when it is present.
+The file is ignored by Git; its `keyAlias`, `password`, and `storeFile` entries
+follow the standard Android Gradle signing-property layout.
+
 The first native build compiles LAME, clones and compiles FFmpeg, and therefore
-takes longer.
+takes longer. Gradle invokes `cargo-ndk` directly and keeps generated JNI
+libraries under `app/build/rustNative`; `gradle clean` removes them.
 The APK is written under `app/build/outputs/apk/debug/`.
 
 The access token is encrypted with an app-specific AES-GCM key held by Android

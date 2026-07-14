@@ -10,7 +10,7 @@ use jni::{
     errors::ThrowRuntimeExAndDefault,
     objects::{JClass, JObject, JString},
 };
-use yandex_music_api::{
+use yamu::{
     Client,
     auth::{DeviceAuth, DeviceTokenPoll},
     downloader::{CancellationToken, DownloadEvent, DownloadPhase, DownloadRequest, Downloader},
@@ -71,14 +71,14 @@ impl From<jni::errors::Error> for NativeError {
     }
 }
 
-impl From<yandex_music_api::Error> for NativeError {
-    fn from(error: yandex_music_api::Error) -> Self {
+impl From<yamu::Error> for NativeError {
+    fn from(error: yamu::Error) -> Self {
         Self(format!("{:#}", anyhow::Error::new(error)))
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_okhsunrog_yamusdownloader_NativeBridge_initialize<'caller>(
+pub extern "system" fn Java_dev_okhsunrog_yamu_NativeBridge_initialize<'caller>(
     mut unowned_env: EnvUnowned<'caller>,
     _class: JClass<'caller>,
     context: JObject<'caller>,
@@ -99,7 +99,7 @@ pub extern "system" fn Java_dev_okhsunrog_yamusdownloader_NativeBridge_initializ
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_okhsunrog_yamusdownloader_NativeBridge_mediaBackend<'caller>(
+pub extern "system" fn Java_dev_okhsunrog_yamu_NativeBridge_mediaBackend<'caller>(
     mut unowned_env: EnvUnowned<'caller>,
     _class: JClass<'caller>,
 ) -> JString<'caller> {
@@ -109,7 +109,7 @@ pub extern "system" fn Java_dev_okhsunrog_yamusdownloader_NativeBridge_mediaBack
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_okhsunrog_yamusdownloader_NativeBridge_downloadProgress<'caller>(
+pub extern "system" fn Java_dev_okhsunrog_yamu_NativeBridge_downloadProgress<'caller>(
     mut unowned_env: EnvUnowned<'caller>,
     _class: JClass<'caller>,
 ) -> JString<'caller> {
@@ -135,7 +135,7 @@ pub extern "system" fn Java_dev_okhsunrog_yamusdownloader_NativeBridge_downloadP
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_okhsunrog_yamusdownloader_NativeBridge_cancelDownload<'caller>(
+pub extern "system" fn Java_dev_okhsunrog_yamu_NativeBridge_cancelDownload<'caller>(
     mut unowned_env: EnvUnowned<'caller>,
     _class: JClass<'caller>,
 ) {
@@ -154,7 +154,7 @@ pub extern "system" fn Java_dev_okhsunrog_yamusdownloader_NativeBridge_cancelDow
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_okhsunrog_yamusdownloader_NativeBridge_requestDeviceCode<
+pub extern "system" fn Java_dev_okhsunrog_yamu_NativeBridge_requestDeviceCode<
     'caller,
 >(
     mut unowned_env: EnvUnowned<'caller>,
@@ -179,7 +179,7 @@ pub extern "system" fn Java_dev_okhsunrog_yamusdownloader_NativeBridge_requestDe
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_okhsunrog_yamusdownloader_NativeBridge_pollDeviceToken<'caller>(
+pub extern "system" fn Java_dev_okhsunrog_yamu_NativeBridge_pollDeviceToken<'caller>(
     mut unowned_env: EnvUnowned<'caller>,
     _class: JClass<'caller>,
     device_code: JString<'caller>,
@@ -205,7 +205,7 @@ pub extern "system" fn Java_dev_okhsunrog_yamusdownloader_NativeBridge_pollDevic
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_okhsunrog_yamusdownloader_NativeBridge_downloadResource<'caller>(
+pub extern "system" fn Java_dev_okhsunrog_yamu_NativeBridge_downloadResource<'caller>(
     mut unowned_env: EnvUnowned<'caller>,
     _class: JClass<'caller>,
     token: JString<'caller>,
@@ -592,7 +592,7 @@ fn album_jobs(album: &Album, directory: &Path, target_root: &str) -> Result<Vec<
 }
 
 async fn fetch_artwork(
-    track: &yandex_music_api::models::Track,
+    track: &yamu::models::Track,
     cancellation: &CancellationToken,
 ) -> Option<Vec<u8>> {
     let url = track.cover_url("600x600").or_else(|| {

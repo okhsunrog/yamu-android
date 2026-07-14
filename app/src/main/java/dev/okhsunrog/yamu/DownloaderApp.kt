@@ -1,4 +1,4 @@
-package dev.okhsunrog.yamusdownloader
+package dev.okhsunrog.yamu
 
 import android.content.ClipData
 import android.content.ClipboardManager

@@ -1943,21 +1943,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
-name = "ya-mus-downloader-native"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ffmpeg-next",
- "jni",
- "reqwest",
- "rustls-platform-verifier",
- "serde_json",
- "tokio",
- "yandex-music-api",
-]
-
-[[package]]
-name = "yandex-music-api"
+name = "yamu"
 version = "0.1.0"
 dependencies = [
  "aes",
@@ -1976,6 +1962,20 @@ dependencies = [
  "tokio",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "yamu-native"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ffmpeg-next",
+ "jni",
+ "reqwest",
+ "rustls-platform-verifier",
+ "serde_json",
+ "tokio",
+ "yamu",
 ]
 
 [[package]]

@@ -1,4 +1,4 @@
-package dev.okhsunrog.yamusdownloader
+package dev.okhsunrog.yamu
 
 import android.Manifest
 import android.app.Activity
@@ -284,7 +284,7 @@ class DownloadService : Service() {
 
     companion object {
         internal const val EXTRA_RESOURCE_LINK = "resource_link"
-        internal const val ACTION_CANCEL = "dev.okhsunrog.yamusdownloader.CANCEL_DOWNLOAD"
+        internal const val ACTION_CANCEL = "dev.okhsunrog.yamu.CANCEL_DOWNLOAD"
         private const val CHANNEL_ID = "track-downloads"
         private const val NOTIFICATION_ID = 1001
         private const val NOTIFICATION_INTERVAL_MS = 500L

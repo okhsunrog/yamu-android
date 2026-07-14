@@ -1,17 +1,54 @@
+import java.io.FileInputStream
+import java.util.Properties
 import org.gradle.api.tasks.Exec
+import org.gradle.api.tasks.PathSensitivity
+
+val signingPropertiesFile = rootProject.file("keystore.properties")
+val signingProperties = signingPropertiesFile.takeIf { it.isFile }?.let { propertiesFile ->
+    Properties().apply {
+        FileInputStream(propertiesFile).use { input -> load(input) }
+    }
+}
+
+fun Properties.required(name: String): String =
+    getProperty(name)?.takeIf(String::isNotBlank)
+        ?: error("Missing $name in ${signingPropertiesFile.path}")
 
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val rustJniLibsDir = layout.buildDirectory.dir("rustNative/jniLibs")
+val rustNdkVersion = "29.0.14033849"
+val rustSdkDir =
+    run {
+        val localProperties = rootProject.file("local.properties")
+        val configuredSdk =
+            localProperties.takeIf { it.isFile }?.let { file ->
+                Properties().apply { file.inputStream().use { input -> load(input) } }
+                    .getProperty("sdk.dir")
+            }
+        (configuredSdk ?: System.getenv("ANDROID_HOME") ?: System.getenv("ANDROID_SDK_ROOT"))
+            ?.let(::file)
+            ?: error("Android SDK not found: set sdk.dir in local.properties or ANDROID_HOME")
+    }
+val rustNdkDir =
+    (System.getenv("ANDROID_NDK_HOME") ?: System.getenv("ANDROID_NDK_ROOT"))
+        ?.let(::file)
+        ?.takeIf { it.isDirectory }
+        ?.absolutePath
+        ?: rustSdkDir.resolve("ndk/$rustNdkVersion").absolutePath
+val nativeCrateDir = rootProject.file("native")
+val yamuCrateDir = rootProject.file("../ya-music")
+
 android {
-    namespace = "dev.okhsunrog.yamusdownloader"
+    namespace = "dev.okhsunrog.yamu"
     compileSdk = 37
-    ndkVersion = "29.0.14033849"
+    ndkVersion = rustNdkVersion
 
     defaultConfig {
-        applicationId = "dev.okhsunrog.yamusdownloader"
+        applicationId = "dev.okhsunrog.yamu"
         minSdk = 26
         targetSdk = 37
         versionCode = 1
@@ -22,10 +59,29 @@ android {
         }
     }
 
+    signingConfigs {
+        create("shared") {
+            signingProperties?.let { properties ->
+                keyAlias = properties.required("keyAlias")
+                keyPassword = properties.required("password")
+                storeFile = file(properties.required("storeFile"))
+                storePassword = properties.required("password")
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (signingProperties != null) {
+                signingConfig = signingConfigs.getByName("shared")
+            }
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+        debug {
+            if (signingProperties != null) {
+                signingConfig = signingConfigs.getByName("shared")
+            }
         }
     }
 
@@ -37,6 +93,8 @@ android {
     buildFeatures {
         compose = true
     }
+
+    sourceSets["main"].jniLibs.directories.add(rustJniLibsDir.get().asFile.absolutePath)
 }
 
 dependencies {
@@ -52,21 +110,31 @@ dependencies {
 }
 
 val buildRust = tasks.register<Exec>("buildRust") {
-    workingDir = rootProject.projectDir
-    commandLine("bash", "scripts/build-rust.sh")
+    group = "build"
+    description = "Builds the Yamu JNI library with cargo-ndk."
+    workingDir = nativeCrateDir
+    environment("ANDROID_NDK_HOME", rustNdkDir)
+    environment("NDK_HOME", rustNdkDir)
+    inputs.dir(nativeCrateDir.resolve("src")).withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.file(nativeCrateDir.resolve("Cargo.toml"))
+    inputs.file(nativeCrateDir.resolve("Cargo.lock"))
+    inputs.dir(yamuCrateDir.resolve("src")).withPathSensitivity(PathSensitivity.RELATIVE)
     inputs.files(
-        rootProject.fileTree("native/src"),
-        rootProject.file("native/Cargo.toml"),
-        rootProject.file("native/Cargo.lock"),
-        rootProject.file("../ya-music/Cargo.toml"),
-        rootProject.file("../ya-music/Cargo.lock"),
+        yamuCrateDir.resolve("Cargo.toml"),
+        yamuCrateDir.resolve("Cargo.lock"),
     )
-    inputs.dir(rootProject.file("../ya-music/src"))
     inputs.dir(rootProject.file("vendor/ffmpeg-sys-next"))
+        .withPathSensitivity(PathSensitivity.RELATIVE)
     inputs.dir(rootProject.file("vendor/mp3lame-sys"))
-    outputs.files(
-        file("src/main/jniLibs/arm64-v8a/libya_mus_downloader.so"),
-        file("src/main/jniLibs/x86_64/libya_mus_downloader.so"),
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    outputs.dir(rustJniLibsDir)
+    commandLine(
+        "cargo", "ndk",
+        "-t", "arm64-v8a",
+        "-t", "x86_64",
+        "-P", "26",
+        "-o", rustJniLibsDir.get().asFile.absolutePath,
+        "build", "--release", "--locked",
     )
 }
 

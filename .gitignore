@@ -1,8 +1,8 @@
 .gradle/
 .idea/
 local.properties
+keystore.properties
 **/build/
 native/target/
-app/src/main/jniLibs/
 *.jks
 *.keystore

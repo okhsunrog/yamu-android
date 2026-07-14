@@ -1,10 +1,10 @@
-package dev.okhsunrog.yamusdownloader;
+package dev.okhsunrog.yamu;
 
 import android.content.Context;
 
 final class NativeBridge {
     static {
-        System.loadLibrary("ya_mus_downloader");
+        System.loadLibrary("yamu_native");
     }
 
     private NativeBridge() {}

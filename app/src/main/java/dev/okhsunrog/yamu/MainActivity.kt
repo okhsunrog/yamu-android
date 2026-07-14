@@ -1,4 +1,4 @@
-package dev.okhsunrog.yamusdownloader
+package dev.okhsunrog.yamu
 
 import android.content.Intent
 import android.content.pm.ShortcutInfo
@@ -75,7 +75,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val SHARE_CATEGORY =
-            "dev.okhsunrog.yamusdownloader.category.DOWNLOAD"
+            "dev.okhsunrog.yamu.category.DOWNLOAD"
         private val YANDEX_MUSIC_LINK = Pattern.compile(
             "https://music\\.yandex\\.ru/(?:album/\\d+(?:/track/\\d+)?|" +
                 "users/[^/\\s]+/playlists/\\d+)(?:\\?[^\\s]*)?",

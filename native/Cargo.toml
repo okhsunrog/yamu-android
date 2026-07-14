@@ -1,12 +1,12 @@
 [package]
-name = "ya-mus-downloader-native"
+name = "yamu-native"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
 publish = false
 
 [lib]
-name = "ya_mus_downloader"
+name = "yamu_native"
 crate-type = ["cdylib"]
 
 [dependencies]
@@ -17,7 +17,7 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "s
 rustls-platform-verifier = "0.7"
 serde_json = "1"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread"] }
-yandex-music-api = { path = "../../ya-music", default-features = false, features = ["oauth", "downloader", "media-ffmpeg"] }
+yamu = { path = "../../ya-music", default-features = false, features = ["oauth", "downloader", "media-ffmpeg"] }
 
 [patch.crates-io]
 ffmpeg-sys-next = { path = "../vendor/ffmpeg-sys-next" }
@@ -26,5 +26,7 @@ ffmpeg-sys-next = { path = "../vendor/ffmpeg-sys-next" }
 codegen-units = 1
 lto = "thin"
 opt-level = "s"
+# Every JNI export uses EnvUnowned::with_env, which catches unwind panics and
+# converts them to Java exceptions instead of unwinding across the FFI boundary.
 panic = "unwind"
 strip = "symbols"

@@ -21,6 +21,7 @@ dependencyResolutionManagement {
                     "metadata",
                     "--format-version",
                     "1",
+                    "--locked",
                     "--filter-platform",
                     "aarch64-linux-android",
                     "--manifest-path",
@@ -38,5 +39,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "ya-mus-downloader"
+rootProject.name = "yamu-android"
 include(":app")
