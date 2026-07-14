@@ -44,13 +44,15 @@ jobs:
           path: yamu-android
           fetch-depth: 0
 
-      - name: Check out yamu crate
-        uses: actions/checkout@v7
-        with:
-          repository: okhsunrog/yamu
-          ref: c4f0ffdbe93047154ae6fc500d2474c98a8e6531
-          path: yamu
-          persist-credentials: false
+      - name: Read pinned FFmpeg revision
+        id: revisions
+        run: |
+          ffmpeg_revision="$(tr -d '[:space:]' < vendor/ffmpeg-sys-next/FFMPEG_REVISION)"
+          if [[ ! "$ffmpeg_revision" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid pinned FFmpeg revision: $ffmpeg_revision" >&2
+            exit 1
+          fi
+          echo "ffmpeg=$ffmpeg_revision" >> "$GITHUB_OUTPUT"
 
       - name: Set up Java
         uses: actions/setup-java@v5
@@ -96,7 +98,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             yamu-android/native/target
-          key: cargo-android-${{ runner.os }}-${{ matrix.abi }}-${{ hashFiles('yamu-android/native/Cargo.lock', 'yamu/Cargo.lock') }}
+          key: cargo-android-${{ runner.os }}-${{ matrix.abi }}-${{ hashFiles('yamu-android/native/Cargo.lock', 'yamu-android/vendor/ffmpeg-sys-next/FFMPEG_REVISION') }}
           restore-keys: cargo-android-${{ runner.os }}-${{ matrix.abi }}-
 
       - name: Set up Gradle
@@ -142,6 +144,7 @@ jobs:
         id: build
         env:
           ABI: ${{ matrix.abi }}
+          FFMPEG_REVISION: ${{ steps.revisions.outputs.ffmpeg }}
         run: |
           label="${GITHUB_SHA::7}"
           gradle_args=(":app:assembleRelease" "-Pyamu.abi=$ABI")
@@ -161,7 +164,40 @@ jobs:
           fi
           output="$GITHUB_WORKSPACE/yamu-downloader-$label-$ABI.apk"
           cp "$apk" "$output"
+
+          config_mak=""
+          while IFS= read -r candidate; do
+            source_dir="${candidate%/ffbuild/config.mak}"
+            actual_revision="$(git -C "$source_dir" rev-parse HEAD)"
+            if [ "$actual_revision" = "$FFMPEG_REVISION" ]; then
+              config_mak="$candidate"
+              break
+            fi
+          done < <(find "$GITHUB_WORKSPACE" -path '*/ffmpeg-8.1/ffbuild/config.mak' -type f)
+          if [ -z "$config_mak" ]; then
+            echo "No FFmpeg build for pinned revision $FFMPEG_REVISION" >&2
+            exit 1
+          fi
+
+          configuration="$(grep '^FFMPEG_CONFIGURATION=' "$config_mak")"
+          for flag in \
+            --disable-gpl --disable-version3 --disable-nonfree \
+            --enable-static --disable-shared --enable-libmp3lame; do
+            if [[ "$configuration" != *"$flag"* ]]; then
+              echo "Required FFmpeg configure flag is missing: $flag" >&2
+              exit 1
+            fi
+          done
+
+          ffmpeg_config="$GITHUB_WORKSPACE/ffmpeg-config-$ABI.txt"
+          {
+            printf 'ANDROID_ABI=%s\n' "$ABI"
+            printf 'FFMPEG_REVISION=%s\n' "$FFMPEG_REVISION"
+            grep -E '^(FFMPEG_CONFIGURATION|CC_IDENT|ARCH|CFLAGS|LDFLAGS|EXTRALIBS)=' \
+              "$config_mak"
+          } > "$ffmpeg_config"
           echo "apk=$output" >> "$GITHUB_OUTPUT"
+          echo "ffmpeg_config=$ffmpeg_config" >> "$GITHUB_OUTPUT"
 
       - name: Verify APK architecture and signature
         env:
@@ -183,11 +219,13 @@ jobs:
         if: matrix.abi == 'arm64-v8a'
         run: ./gradlew :app:lintRelease -Pyamu.abi=arm64-v8a
 
-      - name: Upload APK
+      - name: Upload APK and native build metadata
         uses: actions/upload-artifact@v7
         with:
           name: yamu-downloader-${{ matrix.abi }}
-          path: ${{ steps.build.outputs.apk }}
+          path: |
+            ${{ steps.build.outputs.apk }}
+            ${{ steps.build.outputs.ffmpeg_config }}
           if-no-files-found: error
           retention-days: 14
 
@@ -200,15 +238,105 @@ jobs:
       contents: write
 
     steps:
-      - name: Download APKs
+      - name: Check out Yamu Downloader source
+        uses: actions/checkout@v7
+        with:
+          path: source/yamu-android
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Read pinned source metadata
+        id: sources
+        working-directory: source/yamu-android
+        run: |
+          ffmpeg_revision="$(tr -d '[:space:]' < vendor/ffmpeg-sys-next/FFMPEG_REVISION)"
+          if [[ ! "$ffmpeg_revision" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid pinned FFmpeg revision: $ffmpeg_revision" >&2
+            exit 1
+          fi
+          echo "ffmpeg=$ffmpeg_revision" >> "$GITHUB_OUTPUT"
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import re
+          import tomllib
+
+          with open("native/Cargo.lock", "rb") as lock_file:
+              packages = tomllib.load(lock_file)["package"]
+          matches = [
+              package for package in packages
+              if package["name"] == "yamu"
+              and package.get("source", "").startswith("registry+")
+          ]
+          if len(matches) != 1:
+              raise SystemExit("Cargo.lock must contain exactly one registry yamu package")
+          package = matches[0]
+          checksum = package.get("checksum", "")
+          if not re.fullmatch(r"[0-9a-f]{64}", checksum):
+              raise SystemExit("Cargo.lock contains an invalid yamu checksum")
+          print(f"yamu_version={package['version']}")
+          print(f"yamu_checksum={checksum}")
+          PY
+
+      - name: Fetch exact FFmpeg source
+        working-directory: source
+        env:
+          FFMPEG_REVISION: ${{ steps.sources.outputs.ffmpeg }}
+        run: |
+          mkdir FFmpeg
+          git -C FFmpeg init
+          git -C FFmpeg remote add origin https://github.com/FFmpeg/FFmpeg
+          git -C FFmpeg fetch --depth=1 origin "$FFMPEG_REVISION"
+          git -C FFmpeg checkout --detach FETCH_HEAD
+          test "$(git -C FFmpeg rev-parse HEAD)" = "$FFMPEG_REVISION"
+
+      - name: Download APKs and build metadata
         uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: yamu-downloader-*
           merge-multiple: true
 
+      - name: Create LGPL source archive
+        env:
+          YAMU_VERSION: ${{ steps.sources.outputs.yamu_version }}
+          YAMU_CHECKSUM: ${{ steps.sources.outputs.yamu_checksum }}
+          FFMPEG_REVISION: ${{ steps.sources.outputs.ffmpeg }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          bundle="yamu-downloader-$version-lgpl-sources"
+          bundle_root="$RUNNER_TEMP/$bundle"
+          mkdir -p "$bundle_root/BUILD-INFO" "$bundle_root/vendor"
+          mv source/FFmpeg "$bundle_root/FFmpeg"
+          cp -a source/yamu-android/vendor/ffmpeg-sys-next \
+            "$bundle_root/vendor/ffmpeg-sys-next"
+          cp -a source/yamu-android/vendor/mp3lame-sys \
+            "$bundle_root/vendor/mp3lame-sys"
+          cp -a source/yamu-android/LICENSES "$bundle_root/LICENSES"
+          cp source/yamu-android/docs/RELINKING.md "$bundle_root/RELINKING.md"
+          cp dist/ffmpeg-config-*.txt "$bundle_root/BUILD-INFO/"
+          git -C "$bundle_root/FFmpeg" diff --binary \
+            > "$bundle_root/BUILD-INFO/FFMPEG_CHANGES.diff"
+          {
+            printf 'YAMU_ANDROID_TAG=%s\n' "$GITHUB_REF_NAME"
+            printf 'YAMU_ANDROID_REVISION=%s\n' "$GITHUB_SHA"
+            printf 'YAMU_CRATE_VERSION=%s\n' "$YAMU_VERSION"
+            printf 'YAMU_CRATE_SHA256=%s\n' "$YAMU_CHECKSUM"
+            printf 'FFMPEG_REVISION=%s\n' "$FFMPEG_REVISION"
+            printf 'LAME_VERSION=3.100\n'
+          } > "$bundle_root/BUILD-INFO/SOURCES.txt"
+          rm dist/ffmpeg-config-*.txt
+
+          source_date_epoch="$(git -C source/yamu-android show -s --format=%ct HEAD)"
+          tar \
+            --sort=name \
+            --mtime="@$source_date_epoch" \
+            --owner=0 --group=0 --numeric-owner \
+            -C "$RUNNER_TEMP" -cf - "$bundle" \
+            | gzip -n > "dist/$bundle.tar.gz"
+
       - name: Create checksums
-        run: sha256sum dist/*.apk > dist/SHA256SUMS
+        run: |
+          cd dist
+          sha256sum -- *.apk *-lgpl-sources.tar.gz > SHA256SUMS
 
       - name: Publish release
         uses: softprops/action-gh-release@v3
@@ -220,4 +348,5 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             dist/*.apk
+            dist/*-lgpl-sources.tar.gz
             dist/SHA256SUMS

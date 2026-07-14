@@ -157,30 +157,60 @@ fn search() -> PathBuf {
     absolute
 }
 
+fn ffmpeg_repository() -> String {
+    env::var("YAMU_FFMPEG_REPOSITORY")
+        .unwrap_or_else(|_| "https://github.com/FFmpeg/FFmpeg".to_string())
+}
+
+fn ffmpeg_revision() -> String {
+    env::var("YAMU_FFMPEG_REVISION")
+        .unwrap_or_else(|_| include_str!("FFMPEG_REVISION").trim().to_string())
+}
+
+fn source_matches_revision() -> bool {
+    let expected = ffmpeg_revision();
+    Command::new("git")
+        .current_dir(source())
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .is_some_and(|actual| actual.trim() == expected)
+}
+
 fn fetch() -> io::Result<()> {
     let output_base_path = output();
     let clone_dest_dir = format!("ffmpeg-{}", version());
-    let _ = std::fs::remove_dir_all(output_base_path.join(&clone_dest_dir));
-    let status = Command::new("git")
-        .current_dir(&output_base_path)
-        .args(if cfg!(target_os = "windows") {
-            vec!["-c", "core.autocrlf=false"]
-        } else {
-            vec![]
-        })
-        .arg("clone")
-        .arg("--depth=1")
-        .arg("-b")
-        .arg(format!("release/{}", version()))
-        .arg("https://github.com/FFmpeg/FFmpeg")
-        .arg(&clone_dest_dir)
-        .status()?;
+    let clone_dest = output_base_path.join(&clone_dest_dir);
+    let repository = ffmpeg_repository();
+    let revision = ffmpeg_revision();
+    let _ = fs::remove_dir_all(&clone_dest);
+    fs::create_dir_all(&clone_dest)?;
 
-    if status.success() {
-        Ok(())
+    let run_git = |args: &[&str]| -> io::Result<()> {
+        let status = Command::new("git")
+            .current_dir(&clone_dest)
+            .args(args)
+            .status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(io::Error::other(format!(
+                "git {} failed while fetching FFmpeg {revision} from {repository}",
+                args.join(" ")
+            )))
+        }
+    };
+
+    if cfg!(target_os = "windows") {
+        run_git(&["-c", "core.autocrlf=false", "init"])?;
     } else {
-        Err(io::Error::other("fetch failed"))
+        run_git(&["init"])?;
     }
+    run_git(&["remote", "add", "origin", &repository])?;
+    run_git(&["fetch", "--depth=1", "origin", &revision])?;
+    run_git(&["checkout", "--detach", "FETCH_HEAD"])
 }
 
 fn switch(configure: &mut Command, feature: &str, name: &str) {
@@ -977,6 +1007,10 @@ fn link_to_libraries(statik: bool) {
 }
 
 fn main() {
+    println!("cargo:rerun-if-changed=FFMPEG_REVISION");
+    println!("cargo:rerun-if-env-changed=YAMU_FFMPEG_REPOSITORY");
+    println!("cargo:rerun-if-env-changed=YAMU_FFMPEG_REVISION");
+
     let statik = env::var("CARGO_FEATURE_STATIC").is_ok();
     let ffmpeg_major_version: u32 = env!("CARGO_PKG_VERSION_MAJOR").parse().unwrap();
 
@@ -987,7 +1021,10 @@ fn main() {
             search().join("lib").to_string_lossy()
         );
         link_to_libraries(statik);
-        if fs::metadata(search().join("lib").join("libavutil.a")).is_err() {
+        if fs::metadata(search().join("lib").join("libavutil.a")).is_err()
+            || !source_matches_revision()
+        {
+            let _ = fs::remove_dir_all(search());
             fs::create_dir_all(output()).expect("failed to create build directory");
             fetch().unwrap();
             build(sysroot.as_deref()).unwrap();

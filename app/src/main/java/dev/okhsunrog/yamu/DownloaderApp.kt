@@ -5,6 +5,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.os.SystemClock
+import androidx.activity.compose.BackHandler
 import androidx.core.net.toUri
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -30,6 +31,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.CheckCircle
@@ -631,6 +633,12 @@ private fun SettingsContent(
     onPreferMp3Change: (Boolean) -> Unit,
     onLogout: () -> Unit,
 ) {
+    var showLicenses by rememberSaveable { mutableStateOf(false) }
+    if (showLicenses) {
+        OpenSourceLicensesContent(onBack = { showLicenses = false })
+        return
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -692,6 +700,191 @@ private fun SettingsContent(
             detail = "Перекодирование AAC в MP3 не улучшает исходный звук и занимает больше " +
                 "времени и энергии. Включайте его только для совместимости с устройствами.",
             color = MaterialTheme.colorScheme.tertiary,
+        )
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface,
+            ),
+        ) {
+            Column(
+                modifier = Modifier.padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(
+                    text = "О приложении",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = "Yamu Local ${BuildConfig.VERSION_NAME}",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = "Мультимедиа обрабатывают FFmpeg и LAME. Их исходники, " +
+                        "лицензии и инструкции по пересборке опубликованы вместе с релизами.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedButton(onClick = { showLicenses = true }) {
+                    Icon(Icons.Rounded.Security, contentDescription = null)
+                    Spacer(Modifier.size(8.dp))
+                    Text("Лицензии открытого ПО")
+                }
+            }
+        }
+    }
+}
+
+private data class OpenSourceLicense(
+    val title: String,
+    val detail: String,
+    val assetName: String,
+)
+
+private val OpenSourceLicenses = listOf(
+    OpenSourceLicense(
+        title = "FFmpeg",
+        detail = "GNU LGPL 2.1 или новее · статическая сборка без GPL и nonfree",
+        assetName = "FFmpeg-LGPL-2.1.txt",
+    ),
+    OpenSourceLicense(
+        title = "LAME 3.100",
+        detail = "GNU Library General Public License 2",
+        assetName = "LAME-LGPL-2.0.txt",
+    ),
+    OpenSourceLicense(
+        title = "ffmpeg-next / ffmpeg-sys-next",
+        detail = "WTFPL 2",
+        assetName = "ffmpeg-rust-WTFPL.txt",
+    ),
+    OpenSourceLicense(
+        title = "mp3lame-sys 0.1.11",
+        detail = "GNU LGPL 3.0",
+        assetName = "mp3lame-sys-LGPL-3.0.txt",
+    ),
+)
+
+@Composable
+private fun OpenSourceLicensesContent(onBack: () -> Unit) {
+    var selectedAsset by rememberSaveable { mutableStateOf<String?>(null) }
+    val selected = OpenSourceLicenses.firstOrNull { it.assetName == selectedAsset }
+    BackHandler {
+        if (selectedAsset != null) selectedAsset = null else onBack()
+    }
+
+    if (selected != null) {
+        LicenseTextContent(license = selected, onBack = { selectedAsset = null })
+        return
+    }
+
+    val context = LocalContext.current
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 18.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        ScreenTitle(title = "Лицензии открытого ПО", onBack = onBack)
+        Text(
+            text = "Yamu Local ${BuildConfig.VERSION_NAME} распространяется по лицензиям " +
+                "MIT или Apache 2.0.",
+            style = MaterialTheme.typography.bodyLarge,
+        )
+        Text(
+            text = "FFmpeg ${BuildConfig.FFMPEG_REVISION.take(12)} встроен статически. " +
+                "Исходники FFmpeg и LAME и параметры сборки для каждой архитектуры " +
+                "приложены к GitHub-релизу.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        OpenSourceLicenses.forEach { license ->
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                ),
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
+                    Text(license.title, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        license.detail,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    TextButton(onClick = { selectedAsset = license.assetName }) {
+                        Text("Открыть текст лицензии")
+                    }
+                }
+            }
+        }
+
+        OutlinedButton(
+            onClick = {
+                context.startActivity(
+                    Intent(
+                        Intent.ACTION_VIEW,
+                        "https://github.com/okhsunrog/yamu-android/releases".toUri(),
+                    ),
+                )
+            },
+        ) {
+            Icon(Icons.Rounded.OpenInBrowser, contentDescription = null)
+            Spacer(Modifier.size(8.dp))
+            Text("Исходники релизов")
+        }
+    }
+}
+
+@Composable
+private fun LicenseTextContent(license: OpenSourceLicense, onBack: () -> Unit) {
+    val context = LocalContext.current
+    val licenseText = remember(license.assetName) {
+        runCatching {
+            context.assets.open(license.assetName).bufferedReader().use { it.readText() }
+        }.getOrElse { "Не удалось открыть встроенный текст лицензии." }
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 18.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        ScreenTitle(title = license.title, onBack = onBack)
+        Text(
+            text = license.detail,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(text = licenseText, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+private fun ScreenTitle(title: String, onBack: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(onClick = onBack) {
+            Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Назад")
+        }
+        Text(
+            text = title,
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.weight(1f),
         )
     }
 }

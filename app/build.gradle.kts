@@ -26,6 +26,12 @@ require(requestedAbi == null || requestedAbi in supportedAbis) {
 }
 val selectedAbis = requestedAbi?.let(::listOf) ?: supportedAbis
 val yamuVersionName = providers.gradleProperty("yamu.versionName").getOrElse("0.1.0")
+val ffmpegRevision =
+    rootProject.file("vendor/ffmpeg-sys-next/FFMPEG_REVISION").readText().trim().also { revision ->
+        require(revision.matches(Regex("[0-9a-f]{40}"))) {
+            "FFMPEG_REVISION must contain a lowercase 40-character Git commit"
+        }
+    }
 val rustJniLibsDir =
     layout.buildDirectory.dir("rustNative/${requestedAbi ?: "all"}/jniLibs")
 val rustNdkVersion = "29.0.14033849"
@@ -48,7 +54,6 @@ val rustNdkDir =
         ?.absolutePath
         ?: rustSdkDir.resolve("ndk/$rustNdkVersion").absolutePath
 val nativeCrateDir = rootProject.file("native")
-val yamuCrateDir = rootProject.file("../yamu")
 
 android {
     namespace = "dev.okhsunrog.yamu"
@@ -61,6 +66,7 @@ android {
         targetSdk = 37
         versionCode = 1
         versionName = yamuVersionName
+        buildConfigField("String", "FFMPEG_REVISION", "\"$ffmpegRevision\"")
     }
 
     splits {
@@ -104,10 +110,12 @@ android {
     }
 
     buildFeatures {
+        buildConfig = true
         compose = true
     }
 
     sourceSets["main"].jniLibs.directories.add(rustJniLibsDir.get().asFile.absolutePath)
+    sourceSets["main"].assets.directories.add(rootProject.file("LICENSES").absolutePath)
 }
 
 base {
@@ -135,11 +143,6 @@ val buildRust = tasks.register<Exec>("buildRust") {
     inputs.dir(nativeCrateDir.resolve("src")).withPathSensitivity(PathSensitivity.RELATIVE)
     inputs.file(nativeCrateDir.resolve("Cargo.toml"))
     inputs.file(nativeCrateDir.resolve("Cargo.lock"))
-    inputs.dir(yamuCrateDir.resolve("src")).withPathSensitivity(PathSensitivity.RELATIVE)
-    inputs.files(
-        yamuCrateDir.resolve("Cargo.toml"),
-        yamuCrateDir.resolve("Cargo.lock"),
-    )
     inputs.dir(rootProject.file("vendor/ffmpeg-sys-next"))
         .withPathSensitivity(PathSensitivity.RELATIVE)
     inputs.dir(rootProject.file("vendor/mp3lame-sys"))

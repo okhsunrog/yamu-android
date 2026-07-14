@@ -49,11 +49,20 @@ The download is owned by a foreground data-sync service rather than the
 Activity, so it continues while the app is in the background. Its notification
 mirrors progress and includes a cancel action.
 
-`vendor/ffmpeg-sys-next` is based on release 8.1.0. Besides an Android tool
-lookup fix (`Path::parent()` for `llvm-nm`/`llvm-strip`), it has a local
+`vendor/ffmpeg-sys-next` is based on release 8.1.0 and fetches the immutable
+FFmpeg commit recorded in `vendor/ffmpeg-sys-next/FFMPEG_REVISION`. Besides an
+Android tool lookup fix (`Path::parent()` for `llvm-nm`/`llvm-strip`), it has a local
 `build-lib-mp3lame` feature which passes the bundled LAME installation to
 FFmpeg's build. `vendor/mp3lame-sys` is based on release 0.1.11 and includes
-LAME 3.100.
+LAME 3.100. Its small local patch declares Cargo's `links = "mp3lame"` key and
+exports the built prefix so `ffmpeg-sys-next` can find the headers and static
+library while cross-compiling.
+
+These two crates are patched build adapters, not a general dependency mirror.
+All other Rust dependencies, including `yamu`, come from crates.io through the
+locked registry dependency graph. The local copies can be removed once the
+required Android, source-pinning, and LAME-discovery changes are available in
+compatible upstream releases.
 
 ## Build
 
@@ -62,8 +71,11 @@ Requirements:
 - Rust 1.97 with `aarch64-linux-android`, `armv7-linux-androideabi`,
   `x86_64-linux-android`, and `i686-linux-android`;
 - Android SDK 37 and NDK 29.0.14033849;
-- `cargo-ndk`;
-- sibling checkout `../yamu`.
+- `cargo-ndk`.
+
+The native bridge uses the published `yamu` 0.1.0 crate from crates.io. Its
+exact version and registry checksum are locked in `native/Cargo.lock`; no
+sibling source checkout is required.
 
 ```console
 ./gradlew assembleDebug
@@ -85,17 +97,23 @@ takes longer. Gradle invokes `cargo-ndk` directly and keeps generated JNI
 libraries under `app/build/rustNative`; `gradle clean` removes them.
 APKs are written under `app/build/outputs/apk/debug/`. GitHub Actions builds
 the four architectures in parallel and uploads each signed APK separately.
-Tags matching `v*` publish all four APKs and `SHA256SUMS` to a GitHub release.
+Tags matching `v*` publish all four APKs, an LGPL source archive, and
+`SHA256SUMS` to a GitHub release. The checksum file covers both the APKs and
+the source archive.
 
 The access token is encrypted with an app-specific AES-GCM key held by Android
 Keystore; preferences contain only the IV and ciphertext, and Android backup is
 disabled. The app never asks the user to copy or paste a token.
 
-## Distribution note
+## Licensing and distribution
 
 FFmpeg and LAME are built as statically linked components of the native
-library. Before distributing an APK outside private testing, review the LGPL
-requirements for notices, corresponding source, and a way for recipients to
-relink the application with modified versions of those libraries. The vendored
-source trees include their upstream license files; this repository does not yet
-claim to provide a complete binary-distribution compliance bundle.
+library. The APK includes their license texts and an in-app open-source notice.
+Each tagged release additionally publishes the exact FFmpeg and LAME sources,
+per-ABI FFmpeg build configuration, and instructions for rebuilding or
+relinking the application with modified multimedia libraries. GitHub's normal
+source archives contain the matching application source and build scripts.
+
+See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for component notices
+and [`docs/RELINKING.md`](docs/RELINKING.md) for the LGPL-source layout and
+rebuild procedure.
