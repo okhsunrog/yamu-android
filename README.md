@@ -73,7 +73,7 @@ Requirements:
 - Android SDK 37 and NDK 29.0.14033849;
 - `cargo-ndk`.
 
-The native bridge uses the published `yamu` 0.1.0 crate from crates.io. Its
+The native bridge uses the published `yamu` 0.1.1 crate from crates.io. Its
 exact version and registry checksum are locked in `native/Cargo.lock`; no
 sibling source checkout is required.
 

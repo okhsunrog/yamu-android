@@ -16,7 +16,7 @@ use yamu::{
     downloader::{CancellationToken, DownloadEvent, DownloadPhase, DownloadRequest, Downloader},
     media::{MediaBackend as _, TrackMetadata, ffmpeg::Ffmpeg, verify_audio_file, write_metadata},
     models::{Album, AudioCodec, DownloadOptions, Id, Track},
-    resource::{AlbumRef, PlaylistRef, TrackRef},
+    resource::{AlbumRef, PlaylistSourceRef, TrackRef},
 };
 
 #[derive(Clone, Debug, Default)]
@@ -247,7 +247,7 @@ fn runtime() -> Result<&'static tokio::runtime::Runtime> {
 enum ResourceReference {
     Track(TrackRef),
     Album(AlbumRef),
-    Playlist(PlaylistRef),
+    Playlist(PlaylistSourceRef),
 }
 
 struct DownloadJob {
@@ -323,9 +323,14 @@ async fn download_resource(
             ("album", title, Some(directory_name), jobs)
         }
         ResourceReference::Playlist(playlist_ref) => {
-            let playlist = client
-                .playlist(playlist_ref.owner(), playlist_ref.kind())
-                .await?;
+            let playlist = match playlist_ref {
+                PlaylistSourceRef::User(reference) => {
+                    client.playlist(reference.owner(), reference.kind()).await?
+                }
+                PlaylistSourceRef::Uuid(reference) => {
+                    client.playlist_by_uuid(reference.playlist_uuid()).await?
+                }
+            };
             let title = playlist.title.as_deref().unwrap_or("Плейлист").to_owned();
             let directory_name = safe_file_component(&title);
             let directory = output_directory.join(&directory_name);
@@ -471,7 +476,7 @@ fn parse_resource_link(reference: &str) -> Result<ResourceReference> {
     if let Ok(album) = reference.parse::<AlbumRef>() {
         return Ok(ResourceReference::Album(album));
     }
-    if let Ok(playlist) = reference.parse::<PlaylistRef>() {
+    if let Ok(playlist) = reference.parse::<PlaylistSourceRef>() {
         return Ok(ResourceReference::Playlist(playlist));
     }
     bail!("link must point to a track, album, or playlist")
@@ -721,6 +726,7 @@ fn update_download_event(event: DownloadEvent) {
 #[cfg(test)]
 mod tests {
     use super::{ResourceReference, parse_resource_link, safe_file_component};
+    use yamu::resource::PlaylistSourceRef;
 
     #[test]
     fn sanitizes_android_file_names() {
@@ -741,7 +747,13 @@ mod tests {
         ));
         assert!(matches!(
             parse_resource_link("https://music.yandex.ru/users/example/playlists/42"),
-            Ok(ResourceReference::Playlist(_))
+            Ok(ResourceReference::Playlist(PlaylistSourceRef::User(_)))
+        ));
+        assert!(matches!(
+            parse_resource_link(
+                "https://music.yandex.ru/playlists/fa1b8d08-71c7-3ed8-9c58-8eebbdccdf7f?utm_source=web&utm_medium=copy_link"
+            ),
+            Ok(ResourceReference::Playlist(PlaylistSourceRef::Uuid(_)))
         ));
         assert!(parse_resource_link("94298678").is_err());
     }

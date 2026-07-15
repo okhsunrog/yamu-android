@@ -1992,9 +1992,9 @@ checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
 name = "yamu"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84dd05a635fc3b1a7903f28bd071c2ae967a19977973a4c07ac6ce535771ee04"
+checksum = "dbeb3a421c5287636772763153486de16345a952cded106eb6b7bc88a52c3cba"
 dependencies = [
  "aes",
  "base64",

@@ -25,7 +25,7 @@ require(requestedAbi == null || requestedAbi in supportedAbis) {
     "Unsupported yamu.abi=$requestedAbi; expected one of ${supportedAbis.joinToString()}"
 }
 val selectedAbis = requestedAbi?.let(::listOf) ?: supportedAbis
-val yamuVersionName = providers.gradleProperty("yamu.versionName").getOrElse("0.1.0")
+val yamuVersionName = providers.gradleProperty("yamu.versionName").getOrElse("0.1.2")
 val ffmpegRevision =
     rootProject.file("vendor/ffmpeg-sys-next/FFMPEG_REVISION").readText().trim().also { revision ->
         require(revision.matches(Regex("[0-9a-f]{40}"))) {
@@ -64,7 +64,7 @@ android {
         applicationId = "dev.okhsunrog.yamu"
         minSdk = 26
         targetSdk = 37
-        versionCode = 3
+        versionCode = 4
         versionName = yamuVersionName
         buildConfigField("String", "FFMPEG_REVISION", "\"$ffmpegRevision\"")
     }
@@ -133,6 +133,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     implementation("rustls:rustls-platform-verifier:0.1.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
+    testImplementation("junit:junit:4.13.2")
 }
 
 val buildRust = tasks.register<Exec>("buildRust") {

@@ -50,6 +50,7 @@
                 <data android:host="music.yandex.ru" />
                 <data android:pathPattern="/album/.*" />
                 <data android:pathPattern="/users/.*/playlists/.*" />
+                <data android:pathPrefix="/playlists/" />
             </intent-filter>
             <meta-data
                 android:name="android.app.shortcuts"
