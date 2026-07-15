@@ -31,6 +31,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
+private fun JSONObject.optNonBlankString(name: String): String? =
+    if (isNull(name)) null else optString(name).takeIf { it.isNotBlank() }
+
 internal object DownloadCoordinator {
     private val mutableStatus = MutableStateFlow<DownloadStatus>(DownloadStatus.Idle)
     val status = mutableStatus.asStateFlow()
@@ -265,14 +268,14 @@ class DownloadService : Service() {
         val published = ArrayList<PublishedTrack>(files.length())
         for (index in 0 until files.length()) {
             val file = files.getJSONObject(index)
-            val directory = file.optString("directory").takeIf { it.isNotBlank() }
+            val directory = file.optNonBlankString("directory")
             published += TrackPublisher.publish(
                 this,
                 file.getString("path"),
                 directory,
             )
         }
-        val collectionDirectory = result.optString("directory").takeIf { it.isNotBlank() }
+        val collectionDirectory = result.optNonBlankString("directory")
         return PublishedDownload(
             title = result.optString("title", "Музыка"),
             location = listOfNotNull("Music/Ya Music", collectionDirectory).joinToString("/"),

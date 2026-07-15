@@ -81,6 +81,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -719,7 +720,7 @@ private fun SettingsContent(
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
-                    text = "Yamu Local ${BuildConfig.VERSION_NAME}",
+                    text = "${stringResource(R.string.app_name)} ${BuildConfig.VERSION_NAME}",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
@@ -791,7 +792,8 @@ private fun OpenSourceLicensesContent(onBack: () -> Unit) {
     ) {
         ScreenTitle(title = "Лицензии открытого ПО", onBack = onBack)
         Text(
-            text = "Yamu Local ${BuildConfig.VERSION_NAME} распространяется по лицензиям " +
+            text = "${stringResource(R.string.app_name)} ${BuildConfig.VERSION_NAME} " +
+                "распространяется по лицензиям " +
                 "MIT или Apache 2.0.",
             style = MaterialTheme.typography.bodyLarge,
         )
