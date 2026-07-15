@@ -29,6 +29,7 @@ internal data class PublishedDownload(
     val title: String,
     val location: String,
     val fileCount: Int,
+    val skippedCount: Int,
     val isCollection: Boolean,
     val shareTrack: PublishedTrack?,
 )

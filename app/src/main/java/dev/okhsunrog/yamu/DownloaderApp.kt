@@ -1020,7 +1020,7 @@ private fun DownloadStatusCard(
                 status.download.shareTrack?.let { "${it.location}/${it.displayName}" }
                     ?: status.download.location
             } else {
-                "${status.download.title} · ${status.download.fileCount} треков\n${status.download.location}"
+                collectionDownloadDetail(status.download)
             },
             color = Color(0xFF2E7D32),
             action = {
@@ -1074,6 +1074,15 @@ private fun StatusCard(
             }
         }
     }
+}
+
+internal fun collectionDownloadDetail(download: PublishedDownload): String {
+    val skipped = if (download.skippedCount > 0) {
+        " · пропущено: ${download.skippedCount}"
+    } else {
+        ""
+    }
+    return "${download.title} · ${download.fileCount} треков$skipped\n${download.location}"
 }
 
 internal fun readNativeProgress(): NativeDownloadProgress {

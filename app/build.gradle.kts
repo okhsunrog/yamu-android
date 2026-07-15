@@ -25,7 +25,7 @@ require(requestedAbi == null || requestedAbi in supportedAbis) {
     "Unsupported yamu.abi=$requestedAbi; expected one of ${supportedAbis.joinToString()}"
 }
 val selectedAbis = requestedAbi?.let(::listOf) ?: supportedAbis
-val yamuVersionName = providers.gradleProperty("yamu.versionName").getOrElse("0.1.2")
+val yamuVersionName = providers.gradleProperty("yamu.versionName").getOrElse("0.1.3")
 val ffmpegRevision =
     rootProject.file("vendor/ffmpeg-sys-next/FFMPEG_REVISION").readText().trim().also { revision ->
         require(revision.matches(Regex("[0-9a-f]{40}"))) {
@@ -64,7 +64,7 @@ android {
         applicationId = "dev.okhsunrog.yamu"
         minSdk = 26
         targetSdk = 37
-        versionCode = 4
+        versionCode = 5
         versionName = yamuVersionName
         buildConfigField("String", "FFMPEG_REVISION", "\"$ffmpegRevision\"")
     }

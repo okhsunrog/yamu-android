@@ -276,10 +276,12 @@ class DownloadService : Service() {
             )
         }
         val collectionDirectory = result.optNonBlankString("directory")
+        val skippedCount = result.optJSONArray("skipped")?.length() ?: 0
         return PublishedDownload(
             title = result.optString("title", "Музыка"),
             location = listOfNotNull("Music/Ya Music", collectionDirectory).joinToString("/"),
             fileCount = published.size,
+            skippedCount = skippedCount,
             isCollection = result.optString("kind") != "track",
             shareTrack = published.singleOrNull().takeIf { result.optString("kind") == "track" },
         )

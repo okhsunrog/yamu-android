@@ -11,7 +11,7 @@ use jni::{
     objects::{JClass, JObject, JString},
 };
 use yamu::{
-    Client,
+    Client, Error as YamuError,
     auth::{DeviceAuth, DeviceTokenPoll},
     downloader::{CancellationToken, DownloadEvent, DownloadPhase, DownloadRequest, Downloader},
     media::{MediaBackend as _, TrackMetadata, ffmpeg::Ffmpeg, verify_audio_file, write_metadata},
@@ -154,9 +154,7 @@ pub extern "system" fn Java_dev_okhsunrog_yamu_NativeBridge_cancelDownload<'call
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_okhsunrog_yamu_NativeBridge_requestDeviceCode<
-    'caller,
->(
+pub extern "system" fn Java_dev_okhsunrog_yamu_NativeBridge_requestDeviceCode<'caller>(
     mut unowned_env: EnvUnowned<'caller>,
     _class: JClass<'caller>,
 ) -> JString<'caller> {
@@ -374,9 +372,12 @@ async fn download_resource(
     let options = DownloadOptions::default();
     let backend = Ffmpeg;
     let mut files = Vec::with_capacity(item_total);
+    let mut skipped = Vec::new();
     for (index, job) in jobs.into_iter().enumerate() {
         set_native_item(index + 1, item_total, &job.metadata.title);
-        let path = download_job(
+        let track_id = job.track.id.to_string();
+        let track_title = job.metadata.title.clone();
+        let result = download_job(
             &client,
             &uid,
             &backend,
@@ -385,8 +386,26 @@ async fn download_resource(
             prefer_mp3,
             &cancellation,
         )
-        .await?;
-        files.push(path);
+        .await;
+        match result {
+            Ok(path) => files.push(path),
+            Err(error)
+                if kind != "track"
+                    && !cancellation.is_cancelled()
+                    && is_track_unavailable(&error) =>
+            {
+                skipped.push(serde_json::json!({
+                    "position": index + 1,
+                    "trackId": track_id,
+                    "title": track_title,
+                    "reason": error.to_string(),
+                }));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    if files.is_empty() {
+        bail!("all {item_total} tracks are unavailable for download");
     }
     set_native_phase("completed");
     Ok(serde_json::json!({
@@ -394,7 +413,20 @@ async fn download_resource(
         "title": title,
         "directory": collection_directory,
         "files": files,
+        "skipped": skipped,
     }))
+}
+
+fn is_track_unavailable(error: &anyhow::Error) -> bool {
+    match error.downcast_ref::<YamuError>() {
+        Some(YamuError::DownloadUnavailable { .. }) => true,
+        Some(YamuError::Api {
+            status, message, ..
+        }) => {
+            *status == reqwest::StatusCode::FORBIDDEN && message.eq_ignore_ascii_case("no-rights")
+        }
+        _ => false,
+    }
 }
 
 async fn download_job(
@@ -725,7 +757,10 @@ fn update_download_event(event: DownloadEvent) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ResourceReference, parse_resource_link, safe_file_component};
+    use super::{
+        ResourceReference, is_track_unavailable, parse_resource_link, safe_file_component,
+    };
+    use yamu::Error as YamuError;
     use yamu::resource::PlaylistSourceRef;
 
     #[test]
@@ -756,5 +791,27 @@ mod tests {
             Ok(ResourceReference::Playlist(PlaylistSourceRef::Uuid(_)))
         ));
         assert!(parse_resource_link("94298678").is_err());
+    }
+
+    #[test]
+    fn skips_only_errors_for_unavailable_collection_tracks() {
+        let no_rights = anyhow::Error::new(YamuError::Api {
+            status: reqwest::StatusCode::FORBIDDEN,
+            message: "no-rights".to_owned(),
+            body: None,
+        });
+        let unavailable = anyhow::Error::new(YamuError::DownloadUnavailable {
+            name: "not-found".to_owned(),
+            message: "track has no downloadable source".to_owned(),
+        });
+        let rate_limited = anyhow::Error::new(YamuError::Api {
+            status: reqwest::StatusCode::TOO_MANY_REQUESTS,
+            message: "rate-limit".to_owned(),
+            body: None,
+        });
+
+        assert!(is_track_unavailable(&no_rights));
+        assert!(is_track_unavailable(&unavailable));
+        assert!(!is_track_unavailable(&rate_limited));
     }
 }
