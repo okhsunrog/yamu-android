@@ -41,6 +41,15 @@ FFmpeg's `libmp3lame` encoder. FLAC and existing MP3 files are left unchanged.
 The option is disabled by default because lossy-to-lossy transcoding cannot
 improve the source quality and consumes additional time and battery.
 
+Lyrics embedding is enabled by default and can be disabled in Settings. The
+app prefers synchronized LRC when Yandex Music provides it, falls back to plain
+text, and stores the result in the audio file's standard metadata field for
+MP3, FLAC, and M4A. A separate, independently configurable option writes the
+same text beside the audio as `.lrc` or `.txt`; this option is disabled by
+default and asks the user to grant access to `Music` or `Music/Ya Music` through
+Android's system directory picker. Missing lyrics never fail an otherwise valid
+download.
+
 The app uses the library's shared `downloader` pipeline. It displays real
 downloaded and total byte counts when the CDN provides `Content-Length`, shows
 normalization/tagging/verification phases, and can cancel an active request

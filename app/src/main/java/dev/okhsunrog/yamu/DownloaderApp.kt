@@ -6,6 +6,8 @@ import android.content.Context
 import android.content.Intent
 import android.os.SystemClock
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.net.toUri
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -445,6 +447,45 @@ private fun DownloaderScreen(
     val settingsStore = remember(context) { SettingsStore(context) }
     var selectedSection by rememberSaveable { mutableStateOf(AppSection.Download) }
     var preferMp3 by rememberSaveable { mutableStateOf(settingsStore.preferMp3) }
+    var embedLyrics by rememberSaveable { mutableStateOf(settingsStore.embedLyrics) }
+    var saveLyricsFiles by rememberSaveable { mutableStateOf(settingsStore.saveLyricsFiles) }
+    var lyricsDirectoryError by rememberSaveable { mutableStateOf<String?>(null) }
+    val lyricsDirectoryLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { directoryUri ->
+        if (directoryUri != null) {
+            val result = runCatching {
+                require(LyricsPublisher.supportsTree(context, directoryUri)) {
+                    "Выберите папку Music или Music/Ya Music"
+                }
+                context.contentResolver.takePersistableUriPermission(
+                    directoryUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                        Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                )
+                val previousUri = settingsStore.lyricsDirectoryUri?.toUri()
+                settingsStore.lyricsDirectoryUri = directoryUri.toString()
+                settingsStore.saveLyricsFiles = true
+                if (previousUri != null && previousUri != directoryUri) {
+                    runCatching {
+                        context.contentResolver.releasePersistableUriPermission(
+                            previousUri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                        )
+                    }
+                }
+            }
+            result.onSuccess {
+                saveLyricsFiles = true
+                lyricsDirectoryError = null
+            }.onFailure { error ->
+                saveLyricsFiles = false
+                settingsStore.saveLyricsFiles = false
+                lyricsDirectoryError = error.message ?: "Не удалось получить доступ к папке"
+            }
+        }
+    }
 
     fun download(rawLink: String) {
         val normalizedLink = MainActivity.extractResourceLink(rawLink)
@@ -622,6 +663,24 @@ private fun DownloaderScreen(
                     preferMp3 = enabled
                     settingsStore.preferMp3 = enabled
                 },
+                embedLyrics = embedLyrics,
+                onEmbedLyricsChange = { enabled ->
+                    embedLyrics = enabled
+                    settingsStore.embedLyrics = enabled
+                },
+                saveLyricsFiles = saveLyricsFiles,
+                onSaveLyricsFilesChange = { enabled ->
+                    if (enabled) {
+                        lyricsDirectoryLauncher.launch(
+                            settingsStore.lyricsDirectoryUri?.toUri(),
+                        )
+                    } else {
+                        saveLyricsFiles = false
+                        settingsStore.saveLyricsFiles = false
+                        lyricsDirectoryError = null
+                    }
+                },
+                lyricsDirectoryError = lyricsDirectoryError,
                 onLogout = onLogout,
             )
         }
@@ -632,6 +691,11 @@ private fun DownloaderScreen(
 private fun SettingsContent(
     preferMp3: Boolean,
     onPreferMp3Change: (Boolean) -> Unit,
+    embedLyrics: Boolean,
+    onEmbedLyricsChange: (Boolean) -> Unit,
+    saveLyricsFiles: Boolean,
+    onSaveLyricsFilesChange: (Boolean) -> Unit,
+    lyricsDirectoryError: String?,
     onLogout: () -> Unit,
 ) {
     var showLicenses by rememberSaveable { mutableStateOf(false) }
@@ -702,6 +766,87 @@ private fun SettingsContent(
                 "времени и энергии. Включайте его только для совместимости с устройствами.",
             color = MaterialTheme.colorScheme.tertiary,
         )
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(28.dp),
+            colors = CardDefaults.elevatedCardColors(
+                containerColor = MaterialTheme.colorScheme.surface,
+            ),
+            elevation = CardDefaults.elevatedCardElevation(defaultElevation = 3.dp),
+        ) {
+            Column(
+                modifier = Modifier.padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                Text(
+                    text = "Тексты песен",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text(
+                            text = "Встраивать в аудиофайл",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            text = "Добавлять текст песни в MP3, FLAC и M4A. Если доступен " +
+                                "синхронизированный текст, временные метки сохраняются; " +
+                                "иначе встраивается обычный текст.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = embedLyrics,
+                        onCheckedChange = onEmbedLyricsChange,
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text(
+                            text = "Сохранять отдельный файл",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            text = "Создавать рядом с аудио .lrc для синхронизированного " +
+                                "текста или .txt для обычного. При включении выберите " +
+                                "папку Music или Music/Ya Music.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = saveLyricsFiles,
+                        onCheckedChange = onSaveLyricsFilesChange,
+                    )
+                }
+                lyricsDirectoryError?.let { error ->
+                    Text(
+                        text = error,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        }
 
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -1106,6 +1251,7 @@ internal fun progressDescription(progress: NativeDownloadProgress): String {
         "normalizing" -> "Меняю контейнер без перекодирования…"
         "transcoding_mp3" -> "Конвертирую в MP3…"
         "finalizing" -> "Сохраняю файл…"
+        "lyrics" -> "Получаю текст песни…"
         "artwork" -> "Загружаю обложку…"
         "metadata" -> "Записываю метаданные и обложку…"
         "verifying" -> "Проверяю аудиофайл…"

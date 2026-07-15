@@ -10,12 +10,16 @@ use jni::{
     errors::ThrowRuntimeExAndDefault,
     objects::{JClass, JObject, JString},
 };
+use tokio::io::AsyncWriteExt;
 use yamu::{
     Client, Error as YamuError,
     auth::{DeviceAuth, DeviceTokenPoll},
     downloader::{CancellationToken, DownloadEvent, DownloadPhase, DownloadRequest, Downloader},
-    media::{MediaBackend as _, TrackMetadata, ffmpeg::Ffmpeg, verify_audio_file, write_metadata},
-    models::{Album, AudioCodec, DownloadOptions, Id, Track},
+    media::{
+        EmbeddedLyrics, MediaBackend as _, TrackMetadata, ffmpeg::Ffmpeg, verify_audio_file,
+        write_metadata,
+    },
+    models::{Album, AudioCodec, DownloadOptions, Id, LyricsFormat, Track},
     resource::{AlbumRef, PlaylistSourceRef, TrackRef},
 };
 
@@ -210,6 +214,8 @@ pub extern "system" fn Java_dev_okhsunrog_yamu_NativeBridge_downloadResource<'ca
     resource_reference: JString<'caller>,
     output_directory: JString<'caller>,
     prefer_mp3: jni::sys::jboolean,
+    embed_lyrics: jni::sys::jboolean,
+    save_lyrics_files: jni::sys::jboolean,
 ) -> JString<'caller> {
     unowned_env
         .with_env(
@@ -222,6 +228,8 @@ pub extern "system" fn Java_dev_okhsunrog_yamu_NativeBridge_downloadResource<'ca
                     &resource_reference,
                     Path::new(&output_directory),
                     prefer_mp3,
+                    embed_lyrics,
+                    save_lyrics_files,
                 ))?;
                 Ok(JString::from_str(env, result.to_string())?)
             },
@@ -256,11 +264,20 @@ struct DownloadJob {
     target_directory: Option<String>,
 }
 
+#[derive(Clone, Copy)]
+struct DownloadPreferences {
+    prefer_mp3: bool,
+    embed_lyrics: bool,
+    save_lyrics_files: bool,
+}
+
 async fn download_resource(
     token: &str,
     reference: &str,
     output_directory: &Path,
     prefer_mp3: bool,
+    embed_lyrics: bool,
+    save_lyrics_files: bool,
 ) -> Result<serde_json::Value> {
     let cancellation = CancellationToken::new();
     {
@@ -371,6 +388,11 @@ async fn download_resource(
     }
     let options = DownloadOptions::default();
     let backend = Ffmpeg;
+    let preferences = DownloadPreferences {
+        prefer_mp3,
+        embed_lyrics,
+        save_lyrics_files,
+    };
     let mut files = Vec::with_capacity(item_total);
     let mut skipped = Vec::new();
     for (index, job) in jobs.into_iter().enumerate() {
@@ -383,7 +405,7 @@ async fn download_resource(
             &backend,
             job,
             &options,
-            prefer_mp3,
+            preferences,
             &cancellation,
         )
         .await;
@@ -433,9 +455,9 @@ async fn download_job(
     client: &Client,
     uid: &Id,
     backend: &Ffmpeg,
-    job: DownloadJob,
+    mut job: DownloadJob,
     options: &DownloadOptions,
-    prefer_mp3: bool,
+    preferences: DownloadPreferences,
     cancellation: &CancellationToken,
 ) -> Result<serde_json::Value> {
     let track_id = job.track.id.to_string();
@@ -460,7 +482,7 @@ async fn download_job(
         .await?;
     let mut destination = result.path;
     let mut extension = extension;
-    if prefer_mp3 && extension == "m4a" {
+    if preferences.prefer_mp3 && extension == "m4a" {
         set_native_phase("transcoding_mp3");
         let mp3_destination = job.directory.join(format!("{}.mp3", job.stem));
         if let Err(error) = backend
@@ -473,6 +495,23 @@ async fn download_job(
         tokio::fs::remove_file(&destination).await?;
         destination = mp3_destination;
         extension = "mp3";
+    }
+    let lyrics = if preferences.embed_lyrics || preferences.save_lyrics_files {
+        set_native_phase("lyrics");
+        let lyrics = fetch_lyrics(client, &track_id, cancellation).await;
+        if cancellation.is_cancelled() {
+            let _ = tokio::fs::remove_file(&destination).await;
+            bail!("download was cancelled");
+        }
+        lyrics
+    } else {
+        None
+    };
+    if preferences.embed_lyrics {
+        job.metadata.lyrics = lyrics.as_ref().map(|lyrics| EmbeddedLyrics {
+            text: lyrics.text.clone(),
+            synchronized: lyrics.format == LyricsFormat::Lrc,
+        });
     }
     set_native_phase("artwork");
     let artwork = fetch_artwork(&job.track, cancellation).await;
@@ -492,10 +531,82 @@ async fn download_job(
         let _ = tokio::fs::remove_file(&destination).await;
         bail!("download was cancelled");
     }
+    let lyrics_path = if preferences.save_lyrics_files {
+        match lyrics.as_ref() {
+            Some(lyrics) => Some(
+                write_lyrics_sidecar(&destination, lyrics.format, &lyrics.text)
+                    .await
+                    .context("failed to save lyrics sidecar")?,
+            ),
+            None => None,
+        }
+    } else {
+        None
+    };
+    if cancellation.is_cancelled() {
+        let _ = tokio::fs::remove_file(&destination).await;
+        if let Some(path) = &lyrics_path {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+        bail!("download was cancelled");
+    }
     Ok(serde_json::json!({
         "path": destination.display().to_string(),
         "directory": job.target_directory,
+        "lyricsPath": lyrics_path.map(|path| path.display().to_string()),
     }))
+}
+
+struct FetchedLyrics {
+    format: LyricsFormat,
+    text: String,
+}
+
+async fn fetch_lyrics(
+    client: &Client,
+    track_id: &str,
+    cancellation: &CancellationToken,
+) -> Option<FetchedLyrics> {
+    for format in [LyricsFormat::Lrc, LyricsFormat::Text] {
+        if cancellation.is_cancelled() {
+            return None;
+        }
+        let text = match client.track_lyrics(track_id, format).await {
+            Ok(lyrics) => client.fetch_lyrics(&lyrics).await.ok(),
+            Err(_) => None,
+        };
+        if let Some(text) = text.filter(|text| !text.trim().is_empty()) {
+            return Some(FetchedLyrics { format, text });
+        }
+    }
+    None
+}
+
+fn lyrics_sidecar_path(audio_path: &Path, format: LyricsFormat) -> PathBuf {
+    audio_path.with_extension(format.file_extension())
+}
+
+async fn write_lyrics_sidecar(
+    audio_path: &Path,
+    format: LyricsFormat,
+    text: &str,
+) -> Result<PathBuf> {
+    let destination = lyrics_sidecar_path(audio_path, format);
+    let temporary = destination.with_extension(format!("{}.part", format.file_extension()));
+    let result = async {
+        let mut file = tokio::fs::File::create(&temporary).await?;
+        file.write_all(text.as_bytes()).await?;
+        file.sync_all().await?;
+        drop(file);
+        tokio::fs::rename(&temporary, &destination).await?;
+        Ok::<_, std::io::Error>(())
+    }
+    .await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&temporary).await;
+    }
+    result?;
+    Ok(destination)
 }
 
 fn parse_resource_link(reference: &str) -> Result<ResourceReference> {
@@ -758,14 +869,59 @@ fn update_download_event(event: DownloadEvent) {
 #[cfg(test)]
 mod tests {
     use super::{
-        ResourceReference, is_track_unavailable, parse_resource_link, safe_file_component,
+        ResourceReference, is_track_unavailable, lyrics_sidecar_path, parse_resource_link,
+        safe_file_component, write_lyrics_sidecar,
     };
     use yamu::Error as YamuError;
+    use yamu::models::LyricsFormat;
     use yamu::resource::PlaylistSourceRef;
 
     #[test]
     fn sanitizes_android_file_names() {
         assert_eq!(safe_file_component("AC/DC: Song?"), "AC_DC_ Song_");
+    }
+
+    #[test]
+    fn uses_the_fetched_lyrics_format_for_sidecars() {
+        let audio = std::path::Path::new("Artist - Track.flac");
+        assert_eq!(
+            lyrics_sidecar_path(audio, LyricsFormat::Lrc),
+            std::path::Path::new("Artist - Track.lrc")
+        );
+        assert_eq!(
+            lyrics_sidecar_path(audio, LyricsFormat::Text),
+            std::path::Path::new("Artist - Track.txt")
+        );
+    }
+
+    #[tokio::test]
+    async fn writes_lyrics_sidecars_atomically() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "yamu-native-lyrics-test-{}-{nonce}",
+            std::process::id()
+        ));
+        tokio::fs::create_dir_all(&directory).await.unwrap();
+        let audio = directory.join("Artist - Track.flac");
+
+        let sidecar = write_lyrics_sidecar(&audio, LyricsFormat::Lrc, "[00:00]Test")
+            .await
+            .unwrap();
+
+        assert_eq!(sidecar, directory.join("Artist - Track.lrc"));
+        assert_eq!(
+            tokio::fs::read_to_string(&sidecar).await.unwrap(),
+            "[00:00]Test"
+        );
+        assert!(
+            !tokio::fs::try_exists(directory.join("Artist - Track.lrc.part"))
+                .await
+                .unwrap()
+        );
+        tokio::fs::remove_dir_all(directory).await.unwrap();
     }
 
     #[test]

@@ -25,6 +25,8 @@ final class NativeBridge {
             String token,
             String resourceReference,
             String outputDirectory,
-            boolean preferMp3
+            boolean preferMp3,
+            boolean embedLyrics,
+            boolean saveLyricsFiles
     );
 }

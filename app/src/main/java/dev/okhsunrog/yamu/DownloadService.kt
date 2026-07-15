@@ -10,11 +10,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.core.net.toUri
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -148,6 +150,15 @@ class DownloadService : Service() {
         require(token.isNotBlank() && !resourceLink.isNullOrBlank()) {
             "Не хватает данных для скачивания"
         }
+        val settings = SettingsStore(this@DownloadService)
+        val lyricsDirectoryUri = settings.lyricsDirectoryUri?.toUri()
+        val saveLyricsFiles = settings.saveLyricsFiles
+        if (saveLyricsFiles) {
+            require(
+                lyricsDirectoryUri != null &&
+                    LyricsPublisher.canWriteTree(this@DownloadService, lyricsDirectoryUri),
+            ) { "Повторно выберите папку для файлов с текстами в настройках" }
+        }
         var lastNotification = 0L
         coroutineScope {
             val nativeDownload = async(Dispatchers.IO) {
@@ -155,7 +166,9 @@ class DownloadService : Service() {
                     token,
                     resourceLink,
                     cacheDir.resolve("downloads").absolutePath,
-                    SettingsStore(this@DownloadService).preferMp3,
+                    settings.preferMp3,
+                    settings.embedLyrics,
+                    saveLyricsFiles,
                 )
             }
             try {
@@ -178,7 +191,7 @@ class DownloadService : Service() {
                 DownloadCoordinator.update(publishing)
                 updateNotification(publishing)
                 val download = withContext(Dispatchers.IO) {
-                    publishResult(result)
+                    publishResult(result, lyricsDirectoryUri)
                 }
                 DownloadCoordinator.update(DownloadStatus.Success(download))
             } finally {
@@ -263,7 +276,10 @@ class DownloadService : Service() {
         getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
     }
 
-    private fun publishResult(result: JSONObject): PublishedDownload {
+    private fun publishResult(
+        result: JSONObject,
+        lyricsDirectoryUri: Uri?,
+    ): PublishedDownload {
         val files = result.getJSONArray("files")
         val published = ArrayList<PublishedTrack>(files.length())
         for (index in 0 until files.length()) {
@@ -274,6 +290,16 @@ class DownloadService : Service() {
                 file.getString("path"),
                 directory,
             )
+            file.optNonBlankString("lyricsPath")?.let { lyricsPath ->
+                LyricsPublisher.publish(
+                    this,
+                    lyricsPath,
+                    requireNotNull(lyricsDirectoryUri) {
+                        "Не выбрана папка для файлов с текстами"
+                    },
+                    directory,
+                )
+            }
         }
         val collectionDirectory = result.optNonBlankString("directory")
         val skippedCount = result.optJSONArray("skipped")?.length() ?: 0
